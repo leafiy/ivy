@@ -1,0 +1,103 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const env = process.env.NODE_ENV || 'development';
+const isProduction = env === 'production';
+const configDirectory = path.dirname(fileURLToPath(import.meta.url));
+
+const resolveAuthProviderConfig = (providers) => {
+  const google = providers?.google || {};
+  return {
+    ...providers,
+    google: {
+      ...google,
+      redirectURI: google.redirectURIs?.[env] || google.redirectURI || '',
+    },
+  };
+};
+
+const loadAuthProviders = () => {
+  const filePath = process.env.AUTH_PROVIDERS_CONFIG
+    ? path.resolve(process.env.AUTH_PROVIDERS_CONFIG)
+    : path.join(configDirectory, 'auth.providers.json');
+
+  try {
+    return resolveAuthProviderConfig(JSON.parse(fs.readFileSync(filePath, 'utf8')));
+  } catch (error) {
+    if (error?.code === 'ENOENT' && !isProduction) {
+      return { email: { enabled: false }, google: { enabled: false } };
+    }
+    throw new Error(`Unable to load auth provider config at ${filePath}: ${error.message}`);
+  }
+};
+
+const requireSecret = (name, fallback) => {
+  const value = process.env[name];
+  if (value) return value;
+  if (!isProduction && fallback) return fallback;
+  throw new Error(`${name} is required in production`);
+};
+
+const intFromEnv = (name, fallback) => {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const csvFromEnv = (name, fallback) => {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  return raw
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+};
+
+export const noteColors = ['white', 'yellow', 'green', 'blue', 'pink', 'purple', 'gray'];
+
+const common = {
+  env,
+  port: intFromEnv('PORT', 7788),
+  clientJwt: {
+    secret: requireSecret('CLIENT_JWT_SECRET', 'dev-client-secret-change-me'),
+    expiresIn: process.env.CLIENT_JWT_EXPIRES_IN || '30d',
+  },
+  adminJwt: {
+    secret: requireSecret('ADMIN_JWT_SECRET', 'dev-admin-secret-change-me'),
+    expiresIn: process.env.ADMIN_JWT_EXPIRES_IN || '1d',
+  },
+  uploader: {
+    baseUrl: process.env.UPLOADER_BASE_URL || 'http://127.0.0.1:7799/api',
+    allowedImagePrefixes: csvFromEnv('UPLOADER_ALLOWED_IMAGE_PREFIXES', []),
+  },
+  authProviders: loadAuthProviders(),
+  namespace: {
+    minLength: 1,
+    maxLength: 80,
+  },
+  noteColors,
+  rateLimit: {
+    windowMs: intFromEnv('RATE_LIMIT_WINDOW_MS', 60_000),
+    max: intFromEnv('RATE_LIMIT_MAX', isProduction ? 120 : 1_000),
+  },
+  adminBootstrap: {
+    username: process.env.ADMIN_USER || 'admin',
+    password: requireSecret('ADMIN_PASSWORD', 'admin'),
+  },
+};
+
+export const configs = {
+  development: {
+    ...common,
+    mongoUri: process.env.MONGO_URI || 'mongodb://127.0.0.1:27027/ivy-api-dev',
+  },
+  production: {
+    ...common,
+    mongoUri: process.env.MONGO_URI || 'mongodb://mongodb:27017/ivy-api',
+  },
+};
+
+const config = configs[env] || configs.development;
+export default config;

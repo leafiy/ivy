@@ -1,0 +1,20 @@
+services:
+  api:
+    image: ${IVY_API_IMAGE:-ivy-api:local}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:7788:7788"
+    environment:
+      NODE_ENV: production
+      PORT: 7788
+      MONGO_URI: ${MONGO_URI:?set MONGO_URI}
+      CLIENT_JWT_SECRET: ${CLIENT_JWT_SECRET:?set CLIENT_JWT_SECRET}
+      ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET:?set ADMIN_JWT_SECRET}
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD}
+      UPLOADER_BASE_URL: "${UPLOADER_BASE_URL:?set UPLOADER_BASE_URL}"
+      AUTH_PROVIDERS_CONFIG: /app/config/auth.providers.json
+    volumes:
+      - ./api/config/auth.providers.json:/app/config/auth.providers.json:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

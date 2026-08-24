@@ -1,0 +1,24 @@
+{
+  "email": {
+    "enabled": false,
+    "provider": "aliyun-direct-mail",
+    "aliyun": {
+      "endpoint": "https://dm.aliyuncs.com",
+      "accessKeyId": "replace-me",
+      "accessKeySecret": "replace-me",
+      "accountName": "sender@example.com",
+      "fromAlias": "Ivy"
+    }
+  },
+  "google": {
+    "enabled": false,
+    "audiences": [],
+    "clientId": "replace-me.apps.googleusercontent.com",
+    "clientSecret": "replace-me",
+    "redirectURIs": {
+      "development": "http://localhost:7788/api/v1/auth/oauth/google/callback",
+      "production": "https://example.com/api/v1/auth/oauth/google/callback"
+    },
+    "appCallbackURL": "ivy://oauth/google"
+  }
+}

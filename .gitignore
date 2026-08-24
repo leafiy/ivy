@@ -1,0 +1,55 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Swift Package Manager and Xcode
+.build/
+.swiftpm/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xcarchive
+*.dSYM/
+*.dSYM.zip
+
+# Ivy application and release output
+build.noindex/
+*.app/
+*.dmg
+*.pkg
+
+# Node.js package managers
+node_modules/
+.pnpm-store/
+.npm/
+.yarn/cache/
+.yarn/install-state.gz
+
+# Frontend build and test output
+dist/
+coverage/
+.nyc_output/
+.vite/
+*.tsbuildinfo
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Local authentication provider credentials
+api/config/auth.providers.json
+
+# Temporary files
+*.tmp
+*.swp
+*~

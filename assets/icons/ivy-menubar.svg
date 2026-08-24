@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="640" viewBox="0 0 640 640">
+  <!-- Transparent, enlarged menu-bar variant of the Ivy product mark. -->
+  <g transform="translate(320 320) scale(0.82) translate(-537 -519)">
+    <rect
+      x="350"
+      y="340"
+      width="450"
+      height="470"
+      rx="60"
+      fill="#18B981"
+      transform="rotate(5 575 575)"
+    />
+
+    <path
+      fill="#21A7F2"
+      d="M320 300H645L745 400V715C745 751 716 780 680 780H320C284 780 255 751 255 715V365C255 329 284 300 320 300Z"
+    />
+    <path fill="#8BE1F5" d="M645 300V400H745L645 300Z" />
+
+    <g fill="#1454D8">
+      <circle cx="500" cy="250" r="42" />
+      <path d="M476 280H524L520 310H540C547 310 552 315 552 322C552 329 547 334 540 334H512L505 382C503 397 497 397 495 382L488 334H460C453 334 448 329 448 322C448 315 453 310 460 310H480L476 280Z" />
+    </g>
+  </g>
+</svg>
