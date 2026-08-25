@@ -22,7 +22,7 @@ struct IvySettingsView: View {
             )
             LeafiyUI.SettingsPane(
                 L("Sync"),
-                icon: Image(nsImage: IvyIcon.sync.nsImage),
+                systemImage: "arrow.triangle.2.circlepath",
                 height: LeafiyDesign.Size.settingsPaneHeight
             ) {
                 AccountSettingsContent(

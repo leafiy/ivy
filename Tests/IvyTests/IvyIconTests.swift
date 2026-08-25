@@ -22,6 +22,11 @@ final class IvyIconTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let sourceRoot = repositoryRoot.appendingPathComponent("Sources/Ivy", isDirectory: true)
+        let approvedLeafiySettingsFragments = [
+            "IvySettingsView.swift": [
+                #"systemImage: "arrow.triangle.2.circlepath""#,
+            ],
+        ]
         let forbiddenFragments = [
             "Image(systemName:",
             "systemImage:",
@@ -37,7 +42,15 @@ final class IvyIconTests: XCTestCase {
         )
 
         for case let fileURL as URL in files where fileURL.pathExtension == "swift" {
-            let source = try String(contentsOf: fileURL, encoding: .utf8)
+            var source = try String(contentsOf: fileURL, encoding: .utf8)
+            for fragment in approvedLeafiySettingsFragments[fileURL.lastPathComponent, default: []] {
+                XCTAssertEqual(
+                    source.components(separatedBy: fragment).count - 1,
+                    1,
+                    "\(fileURL.lastPathComponent) must use the approved LeafiyUI settings icon"
+                )
+                source = source.replacingOccurrences(of: fragment, with: "")
+            }
             for fragment in forbiddenFragments {
                 XCTAssertFalse(
                     source.contains(fragment),

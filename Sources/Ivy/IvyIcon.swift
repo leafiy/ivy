@@ -18,7 +18,6 @@ enum IvyIcon: CaseIterable {
     case paperclip
     case pin
     case pinOff
-    case sync
     case todo
     case todoChecked
     case todoUnchecked
@@ -79,7 +78,6 @@ enum IvyIcon: CaseIterable {
         case .paperclip: "paperclip"
         case .pin: "pin"
         case .pinOff: "pin-off"
-        case .sync: "refresh-cw"
         case .todo: "list-todo"
         case .todoChecked: "square-check-big"
         case .todoUnchecked: "square"
