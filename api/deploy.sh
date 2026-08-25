@@ -177,11 +177,12 @@ REMOTE
 
 configure_runtime() {
   info "Configure isolated Ivy runtime"
-  "${SSH[@]}" bash -s -- "$REMOTE_BASE" "$remote_release" "$UPLOADER_BASE_URL" <<'REMOTE'
+  "${SSH[@]}" bash -s -- "$REMOTE_BASE" "$remote_release" "$UPLOADER_BASE_URL" "$release_id" <<'REMOTE'
 set -Eeuo pipefail
 remote_base="$1"
 remote_release="$2"
 uploader_base_url="$3"
+source_revision="$4"
 env_file="$remote_base/.env"
 
 mkdir -p "$remote_base"
@@ -257,7 +258,12 @@ done
     }
   " >/dev/null
 
-"${compose[@]}" up -d --build api
+docker build \
+  --build-arg "IVY_SOURCE_REVISION=$source_revision" \
+  --tag ivy-api:local \
+  "$remote_release/api"
+[ "$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' ivy-api:local)" = "$source_revision" ]
+"${compose[@]}" up -d --force-recreate --no-build api
 for attempt in $(seq 1 45); do
   if curl -fsS "http://127.0.0.1:7788/api/v1/auth/config" | \
     jq -e '.passwordless.enabled and .email.enabled and .google.enabled' >/dev/null 2>&1; then
