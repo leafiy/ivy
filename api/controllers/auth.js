@@ -7,8 +7,23 @@ import Namespace from '../models/namespace.model.js';
 import Device from '../models/device.model.js';
 import EmailCode from '../models/emailCode.model.js';
 import { sendVerificationCode } from '../services/email.js';
+import {
+  issueClientSession,
+  revokeClientSession,
+  rotateClientSession,
+} from '../services/clientSession.js';
+import {
+  consumeOAuthExchangeCode,
+  createOAuthExchangeCode,
+} from '../services/oauthCode.js';
 import { verifyGoogleIdToken } from '../services/oauthVerify.js';
 import { privateAccountHandle } from '../services/privateIdentity.js';
+import {
+  clearBrowserSessionCookies,
+  isWebClient,
+  refreshTokenFromRequest,
+  setBrowserSessionCookies,
+} from '../middleware/browserSession.js';
 import {
   ATTACHMENT_LIMIT_BYTES,
   NOTE_DATABASE_LIMIT_BYTES,
@@ -25,12 +40,6 @@ import {
 
 const normalizeEmail = (email) => requireString(email, 'email').toLowerCase();
 
-const signClientToken = (principal, principalType) =>
-  jwt.sign(
-    { sub: principal._id.toString(), type: 'client', principalType },
-    config.clientJwt.secret,
-    { expiresIn: config.clientJwt.expiresIn }
-  );
 
 const signOAuthState = ({ provider, device }) =>
   jwt.sign(
@@ -137,6 +146,7 @@ const upsertDeviceForUser = async (user, rawDevice) => {
     { $set: { name: device.name, lastSeenAt: new Date() } },
     { upsert: true }
   );
+  return device;
 };
 
 const verifyEmailCode = async (email, code) => {
@@ -178,34 +188,69 @@ const savePrincipal = async (principal) => {
   }
 };
 
-const issueAuthResponse = async (res, principal, created, principalType) => {
-  const token = signClientToken(principal, principalType);
-  const me = await buildMe(principal, principalType);
-  res.json({ token, created, user: me });
+const sendSessionResponse = async (req, res, session, created) => {
+  const me = await buildMe(session.principal, session.principalType);
+  const body = {
+    accessToken: session.accessToken,
+    expiresIn: session.expiresIn,
+    created,
+    user: me,
+  };
+  if (isWebClient(req)) {
+    body.csrfToken = setBrowserSessionCookies(res, session.refreshToken);
+  } else {
+    body.refreshToken = session.refreshToken;
+  }
+  res.json(body);
 };
 
-export const login = async (req, res) => {
+const issueAuthResponse = async (req, res, principal, created, principalType, rawDevice) => {
+  const device = await upsertDeviceForUser(principal, rawDevice);
+  const session = await issueClientSession(principal, principalType, device);
+  await sendSessionResponse(req, res, session, created);
+};
+
+const findNamespacePrincipal = async (key) => {
+  const namespace = await Namespace.findOne({ key });
+  if (namespace) return { principal: namespace, principalType: 'namespace' };
+
+  const legacy = await User.findOne({
+    username: key,
+    locked: false,
+    passwordHash: { $exists: false },
+    googleSub: { $exists: false },
+  });
+  return legacy
+    ? { principal: legacy, principalType: 'legacy-namespace' }
+    : null;
+};
+
+export const loginNamespace = async (req, res) => {
+  const name = normalizeNamespace(req.body.namespace ?? req.body.username);
+  assertNamespace(name);
+  const found = await findNamespacePrincipal(namespaceKey(name));
+  if (!found) {
+    throw apiError(404, 'NAMESPACE_NOT_FOUND', 'Namespace does not exist.');
+  }
+  await issueAuthResponse(
+    req,
+    res,
+    found.principal,
+    false,
+    found.principalType,
+    req.body.device
+  );
+};
+
+export const createNamespace = async (req, res) => {
   const name = normalizeNamespace(req.body.namespace ?? req.body.username);
   assertNamespace(name);
   const key = namespaceKey(name);
-  assertDevicePayload(req.body.device);
-
-  let principal = await Namespace.findOne({ key });
-  let principalType = 'namespace';
-  if (!principal) {
-    principal = await User.findOne({
-      username: key,
-      locked: false,
-      passwordHash: { $exists: false },
-      googleSub: { $exists: false },
-    });
-    if (principal) principalType = 'legacy-namespace';
+  if (await findNamespacePrincipal(key)) {
+    throw apiError(409, 'NAMESPACE_TAKEN', 'Namespace is already in use.');
   }
-  const created = !principal;
-  if (!principal) principal = await savePrincipal(new Namespace({ name, key }));
-
-  await upsertDeviceForUser(principal, req.body.device);
-  await issueAuthResponse(res, principal, created, principalType);
+  const principal = await savePrincipal(new Namespace({ name, key }));
+  await issueAuthResponse(req, res, principal, true, 'namespace', req.body.device);
 };
 
 export const sendEmailCode = async (req, res) => {
@@ -233,17 +278,14 @@ export const loginWithEmail = async (req, res) => {
   }
   const email = normalizeEmail(req.body.email);
   const password = requireString(req.body.password, 'password');
-  assertDevicePayload(req.body.device);
   const user = await User.findOne({ email });
   if (!user?.passwordHash || !(await bcrypt.compare(password, user.passwordHash))) {
     throw apiError(401, 'UNAUTHORIZED', 'Invalid email or password.');
   }
-  await upsertDeviceForUser(user, req.body.device);
-  await issueAuthResponse(res, user, false, 'account');
+  await issueAuthResponse(req, res, user, false, 'account', req.body.device);
 };
 
 export const register = async (req, res) => {
-  assertDevicePayload(req.body.device);
 
   const email = normalizeEmail(req.body.email);
   if (await User.exists({ email })) {
@@ -262,8 +304,7 @@ export const register = async (req, res) => {
       locked: true,
     })
   );
-  await upsertDeviceForUser(user, req.body.device);
-  await issueAuthResponse(res, user, true, 'account');
+  await issueAuthResponse(req, res, user, true, 'account', req.body.device);
 };
 
 const resolveOAuthUser = async ({ identity, provider, device, subField }) => {
@@ -285,7 +326,6 @@ const resolveOAuthUser = async ({ identity, provider, device, subField }) => {
     await savePrincipal(user);
   }
 
-  await upsertDeviceForUser(user, device);
   return { user, created };
 };
 
@@ -297,7 +337,7 @@ const oauthLogin = async ({ provider, req, res, verifyToken, subField }) => {
     device: req.body.device,
     subField,
   });
-  await issueAuthResponse(res, user, created, 'account');
+  await issueAuthResponse(req, res, user, created, 'account', req.body.device);
 };
 
 export const startGoogleOAuth = async (req, res) => {
@@ -347,14 +387,21 @@ export const googleOAuthCallback = async (req, res) => {
       throw apiError(401, 'TOKEN_INVALID', 'Google token exchange failed.');
     }
     const identity = await verifyGoogleIdToken(tokenBody.id_token);
-    const { user } = await resolveOAuthUser({
+    const { user, created } = await resolveOAuthUser({
       identity,
       provider: 'google',
       device: statePayload.device,
       subField: 'googleSub',
     });
+    const device = await upsertDeviceForUser(user, statePayload.device);
+    const exchangeCode = await createOAuthExchangeCode({
+      principal: user,
+      principalType: 'account',
+      device,
+      created,
+    });
     const callback = new URL(google.appCallbackURL);
-    callback.searchParams.set('token', signClientToken(user, 'account'));
+    callback.searchParams.set('code', exchangeCode);
     res.redirect(302, callback.toString());
   } catch (error) {
     const callback = new URL(google.appCallbackURL || 'ivy://oauth/google');
@@ -373,8 +420,30 @@ export const oauthGoogle = async (req, res) =>
     subField: 'googleSub',
   });
 
+export const exchangeOAuthCode = async (req, res) => {
+  const exchange = await consumeOAuthExchangeCode(req.body?.code);
+  await issueAuthResponse(
+    req,
+    res,
+    exchange.principal,
+    exchange.created,
+    exchange.principalType,
+    exchange.device
+  );
+};
+
 export const refresh = async (req, res) => {
-  await issueAuthResponse(res, req.user, false, req.principalType);
+  const device = assertDevicePayload(req.body?.device);
+  const session = await rotateClientSession(refreshTokenFromRequest(req), device.id);
+  await upsertDeviceForUser(session.principal, device);
+  await sendSessionResponse(req, res, session, false);
+};
+
+export const logout = async (req, res) => {
+  const deviceId = typeof req.body?.device?.id === 'string' ? req.body.device.id : '';
+  await revokeClientSession(refreshTokenFromRequest(req), deviceId);
+  if (isWebClient(req)) clearBrowserSessionCookies(res);
+  res.status(204).end();
 };
 
 export const me = async (req, res) => {

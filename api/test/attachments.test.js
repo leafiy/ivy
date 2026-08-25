@@ -1,54 +1,51 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import sharp from 'sharp';
-import {
-  THUMBNAIL_MAX_WIDTH,
-  createThumbnail,
-  isThumbnailableImage,
-  thumbnailFilename,
-} from '../services/thumbnails.js';
+import { uploadFiles } from '../controllers/upload.js';
+import { getDirectUploadAuthorization } from '../services/uploader.js';
 
-test('only decodable image types get thumbnails', () => {
-  assert.equal(isThumbnailableImage('image/jpeg'), true);
-  assert.equal(isThumbnailableImage('IMAGE/PNG'), true);
-  assert.equal(isThumbnailableImage('image/svg+xml'), true);
-  assert.equal(isThumbnailableImage('application/pdf'), false);
-  assert.equal(isThumbnailableImage('video/mp4'), false);
-  assert.equal(isThumbnailableImage(undefined), false);
+test('direct upload authorization targets the public uploader', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async (url) => {
+    assert.equal(url, 'https://uploader.qiansmile.com/api/init');
+    return {
+      ok: true,
+      async json() {
+        return {
+          accessToken: 'direct-token',
+          expiresIn: new Date(Date.now() + 3_600_000).toISOString(),
+        };
+      },
+    };
+  };
+
+  try {
+    const authorization = await getDirectUploadAuthorization('ivy/user-1/attachments');
+    assert.deepEqual(authorization, {
+      uploadURL: 'https://uploader.qiansmile.com/api/upload/files',
+      authorization: 'Uploader direct-token',
+      filePath: 'ivy/user-1/attachments',
+    });
+  } finally {
+    global.fetch = originalFetch;
+  }
 });
 
-test('thumbnail filenames keep the base name and switch to webp', () => {
-  assert.equal(thumbnailFilename('photo.jpeg'), 'photo.thumb.webp');
-  assert.equal(thumbnailFilename('archive.tar.gz'), 'archive.tar.thumb.webp');
-  assert.equal(thumbnailFilename('noextension'), 'noextension.thumb.webp');
-  assert.equal(thumbnailFilename(''), 'image.thumb.webp');
-});
+test('attachment registration rejects URLs outside the authenticated account path', async () => {
+  const request = {
+    user: { _id: { toString: () => 'user-1' } },
+    body: {
+      files: [{
+        url: 'https://files.qiansmile.com/ivy/user-2/attachments/file.txt',
+        uuid: 'uuid-1',
+        name: 'file.txt',
+        sizeBytes: 5,
+        contentType: 'text/plain',
+      }],
+    },
+  };
 
-test('wide images compress down to 600px-wide webp thumbnails', async () => {
-  const source = await sharp({
-    create: { width: 1200, height: 400, channels: 3, background: { r: 200, g: 80, b: 120 } },
-  }).png().toBuffer();
-
-  const thumbnail = await createThumbnail(source);
-
-  const metadata = await sharp(thumbnail).metadata();
-  assert.equal(metadata.format, 'webp');
-  assert.equal(metadata.width, THUMBNAIL_MAX_WIDTH);
-  assert.equal(metadata.height, 200);
-});
-
-test('small images are never upscaled', async () => {
-  const source = await sharp({
-    create: { width: 320, height: 240, channels: 3, background: { r: 10, g: 20, b: 30 } },
-  }).png().toBuffer();
-
-  const thumbnail = await createThumbnail(source);
-
-  const metadata = await sharp(thumbnail).metadata();
-  assert.equal(metadata.width, 320);
-  assert.equal(metadata.height, 240);
-});
-
-test('non-image bytes are rejected instead of producing a broken thumbnail', async () => {
-  await assert.rejects(() => createThumbnail(Buffer.from('not an image')));
+  await assert.rejects(
+    () => uploadFiles(request, {}),
+    (error) => error.code === 'FILE_URL_INVALID' && error.statusCode === 422
+  );
 });

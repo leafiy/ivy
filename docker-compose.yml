@@ -1,7 +1,30 @@
+name: ivy
+
 services:
-  api:
-    image: ${IVY_API_IMAGE:-ivy-api:local}
+  mongo:
+    image: mongo:7.0
     restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:-ivy_root}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?set MONGO_ROOT_PASSWORD}
+      IVY_MONGO_USER: ${IVY_MONGO_USER:-ivy_api}
+      IVY_MONGO_PASSWORD: ${IVY_MONGO_PASSWORD:?set IVY_MONGO_PASSWORD}
+    volumes:
+      - ivy-mongodb-data:/data/db
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+
+  api:
+    build:
+      context: ./api
+    image: ivy-api:local
+    restart: unless-stopped
+    depends_on:
+      - mongo
+      - redis
     ports:
       - "127.0.0.1:7788:7788"
     environment:
@@ -9,12 +32,19 @@ services:
       PORT: 7788
       MONGO_URI: ${MONGO_URI:?set MONGO_URI}
       CLIENT_JWT_SECRET: ${CLIENT_JWT_SECRET:?set CLIENT_JWT_SECRET}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      RATE_LIMIT_KEY_SECRET: ${RATE_LIMIT_KEY_SECRET:?set RATE_LIMIT_KEY_SECRET}
+      CLIENT_JWT_EXPIRES_SECONDS: ${CLIENT_JWT_EXPIRES_SECONDS:-900}
+      REFRESH_TOKEN_TTL_MS: ${REFRESH_TOKEN_TTL_MS:-2592000000}
+      WEB_ALLOWED_ORIGINS: "${WEB_ALLOWED_ORIGINS:-https://ivy.leafiy.com}"
       ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET:?set ADMIN_JWT_SECRET}
       ADMIN_USER: ${ADMIN_USER:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD}
-      UPLOADER_BASE_URL: "${UPLOADER_BASE_URL:?set UPLOADER_BASE_URL}"
+      UPLOADER_BASE_URL: "${UPLOADER_BASE_URL:-https://uploader.qiansmile.com/api}"
       AUTH_PROVIDERS_CONFIG: /app/config/auth.providers.json
     volumes:
-      - ./api/config/auth.providers.json:/app/config/auth.providers.json:ro
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - ${IVY_AUTH_PROVIDERS_CONFIG:-./api/config/auth.providers.json}:/app/config/auth.providers.json:ro
+
+volumes:
+  ivy-mongodb-data:
+    name: ivy-mongodb-data

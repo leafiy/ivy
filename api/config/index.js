@@ -62,14 +62,20 @@ const common = {
   port: intFromEnv('PORT', 7788),
   clientJwt: {
     secret: requireSecret('CLIENT_JWT_SECRET', 'dev-client-secret-change-me'),
-    expiresIn: process.env.CLIENT_JWT_EXPIRES_IN || '30d',
+    expiresInSeconds: intFromEnv('CLIENT_JWT_EXPIRES_SECONDS', 15 * 60),
+  },
+  refreshToken: {
+    ttlMs: intFromEnv('REFRESH_TOKEN_TTL_MS', 30 * 24 * 60 * 60 * 1000),
+  },
+  oauthCode: {
+    ttlMs: intFromEnv('OAUTH_CODE_TTL_MS', 5 * 60 * 1000),
   },
   adminJwt: {
     secret: requireSecret('ADMIN_JWT_SECRET', 'dev-admin-secret-change-me'),
     expiresIn: process.env.ADMIN_JWT_EXPIRES_IN || '1d',
   },
   uploader: {
-    baseUrl: process.env.UPLOADER_BASE_URL || 'http://127.0.0.1:7799/api',
+    baseUrl: process.env.UPLOADER_BASE_URL || 'https://uploader.qiansmile.com/api',
     allowedImagePrefixes: csvFromEnv('UPLOADER_ALLOWED_IMAGE_PREFIXES', []),
   },
   authProviders: loadAuthProviders(),
@@ -79,8 +85,30 @@ const common = {
   },
   noteColors,
   rateLimit: {
-    windowMs: intFromEnv('RATE_LIMIT_WINDOW_MS', 60_000),
-    max: intFromEnv('RATE_LIMIT_MAX', isProduction ? 120 : 1_000),
+    redisUrl: process.env.REDIS_URL || (isProduction ? 'redis://redis:6379' : ''),
+    keySecret: requireSecret('RATE_LIMIT_KEY_SECRET', 'dev-rate-limit-secret-change-me'),
+    policies: {
+      global: {
+        windowMs: intFromEnv('RATE_LIMIT_WINDOW_MS', 60_000),
+        max: intFromEnv('RATE_LIMIT_MAX', isProduction ? 120 : 1_000),
+      },
+      namespaceCreateIp: { windowMs: 60 * 60 * 1000, max: 5 },
+      namespaceCreateDevice: { windowMs: 24 * 60 * 60 * 1000, max: 10 },
+      namespaceLoginIp: { windowMs: 60 * 1000, max: 30 },
+      emailCooldown: { windowMs: 60 * 1000, max: 1 },
+      emailDailyAddress: { windowMs: 24 * 60 * 60 * 1000, max: 5 },
+      emailDailyIp: { windowMs: 24 * 60 * 60 * 1000, max: 20 },
+      uploadGrant: { windowMs: 10 * 60 * 1000, max: 20 },
+      authenticatedSync: { windowMs: 60 * 1000, max: 120 },
+    },
+  },
+  web: {
+    allowedOrigins: csvFromEnv(
+      'WEB_ALLOWED_ORIGINS',
+      isProduction
+        ? ['https://ivy.leafiy.com']
+        : ['http://localhost:3000', 'http://localhost:5173']
+    ),
   },
   adminBootstrap: {
     username: process.env.ADMIN_USER || 'admin',

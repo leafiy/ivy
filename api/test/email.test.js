@@ -16,7 +16,7 @@ test('verification email uses the configured Ivy sender', async () => {
 
   assert.equal(endpoint, 'https://dm.aliyuncs.com');
   assert.equal(requestOptions.method, 'POST');
-  assert.equal(parameters.AccountName, 'ivy@tatools.cn');
+  assert.equal(parameters.AccountName, 'admin@ivy.leafiy.com');
   assert.equal(parameters.ToAddress, 'reader@example.com');
   assert.equal(parameters.Subject, 'Ivy 邮箱验证码');
   assert.match(parameters.HtmlBody, /123456/);

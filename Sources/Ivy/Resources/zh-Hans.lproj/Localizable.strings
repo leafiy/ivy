@@ -64,6 +64,8 @@
 "Private accounts are completely separate from public namespaces." = "私有账号与公共命名空间完全隔离。";
 "Sign-In Options" = "登录方式";
 "Continue with Ivy" = "使用 Ivy 继续";
+"Join Space" = "加入空间";
+"Create Space" = "创建空间";
 "Continue with Google" = "使用 Google 继续";
 "Some sign-in options are currently unavailable." = "部分登录方式暂不可用。";
 "Some private sign-in options are currently unavailable." = "部分私有登录方式暂不可用。";

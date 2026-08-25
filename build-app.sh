@@ -31,14 +31,11 @@ set --
 if [ "${UNIVERSAL:-0}" = "1" ]; then
     set -- --arch arm64 --arch x86_64
 fi
-# Local app bundles intentionally use the LAN development API even though they
-# are optimized release builds. release.sh omits this compilation condition.
-
 SCRATCH_PATH="${SCRATCH_PATH:-"${TMPDIR%/}/leafiy-swift-builds/ivy"}"
 # Local path dependencies can gain source files without invalidating SwiftPM's
 # cached build description. Always re-plan so LeafiyUI's source list is current.
-leafiy_swift_release_build "$SCRATCH_PATH" -Xswiftc -DIVY_DEVELOPMENT_API "$@"
-BIN_DIR=$(leafiy_swift_release_bin_path "$SCRATCH_PATH" -Xswiftc -DIVY_DEVELOPMENT_API "$@")
+leafiy_swift_release_build "$SCRATCH_PATH" "$@"
+BIN_DIR=$(leafiy_swift_release_bin_path "$SCRATCH_PATH" "$@")
 BUILD_ROOT="${BUILD_ROOT:-"$PWD/build.noindex"}"
 APP_OUTPUT_DIR="${APP_OUTPUT_DIR:-"$BUILD_ROOT/app"}"
 mkdir -p "$BUILD_ROOT"

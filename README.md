@@ -5,7 +5,7 @@ This public mirror contains only the macOS application and API source:
 - `Sources/IvyCore/`, `Sources/Ivy/`, `Tests/`, `Package.swift`, and `Info.plist` — the macOS sticky-notes application.
 - `api/` and `docker-compose.yml` — the Express 5 + Mongoose 8 authentication and sync API.
 
-The admin application, deployment automation, release automation, internal context, and production credentials are maintained separately and are not part of this mirror. The published source is available for inspection; no license to copy, modify, or redistribute it is granted.
+The admin application, release automation, internal context, and production credentials are maintained separately and are not part of this mirror. The published source is available for inspection; no license to copy, modify, or redistribute it is granted.
 
 ## Run the API
 
@@ -21,6 +21,8 @@ ADMIN_JWT_SECRET='replace-me' \
 ADMIN_PASSWORD='replace-me' \
 npm run dev
 ```
+
+For production, `./api/deploy.sh` stages and pushes the current branch, uploads that exact revision to the `leafiy.com` server, builds an isolated MongoDB and API runtime, installs the Caddy sites, and runs public HTTPS smoke tests. macOS clients use `https://ivy-api.leafiy.com`; `https://ivy.leafiy.com` is reserved for a future web client and does not expose the admin. The admin remains local-only, with its Vite development proxy targeting the production API. The uploader remains `https://uploader.qiansmile.com/api`. Run `./api/deploy.sh --help` for prerequisites and environment overrides.
 
 See `api/config/README.md` for email and Google provider fields. Notes sync as one portable SQLite database. The database limit is 10 MB per account; attachments have a separate 50 MB limit and store only their uploaded URLs in SQLite.
 

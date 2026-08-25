@@ -18,12 +18,15 @@ const initUploaderToken = async () => {
   }
 
   const body = await response.json();
-  if (!body.accessToken || !body.expiresIn) {
+  const expiresAt = typeof body.expiresIn === 'number'
+    ? Date.now() + body.expiresIn * 1000
+    : Date.parse(body.expiresIn);
+  if (!body.accessToken || !Number.isFinite(expiresAt)) {
     throw apiError(502, 'UPLOADER_BAD_RESPONSE', 'Uploader init response is invalid.');
   }
 
   cachedToken = body.accessToken;
-  tokenExpiresAt = Date.now() + Number(body.expiresIn) * 1000 - 60_000;
+  tokenExpiresAt = expiresAt - 60_000;
   return cachedToken;
 };
 
@@ -33,6 +36,12 @@ const getUploaderToken = async (forceRefresh = false) => {
   }
   return initUploaderToken();
 };
+
+export const getDirectUploadAuthorization = async (filePath) => ({
+  uploadURL: endpoint('/upload/files'),
+  authorization: `Uploader ${await getUploaderToken()}`,
+  filePath,
+});
 
 const postFiles = async (files, filePath, token) => {
   const form = new FormData();

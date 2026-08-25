@@ -46,7 +46,10 @@ yarn-error.log*
 !.env.example
 !.env.*.example
 
-# Local authentication provider credentials
+# Authentication provider credentials. The canonical private repository tracks
+# this file deliberately (`git add -f`), and gitignore does not apply to files
+# that are already tracked. The rule stays here so that clones of the public
+# mirror, which never receives the file, cannot commit their own credentials.
 api/config/auth.providers.json
 
 # Temporary files

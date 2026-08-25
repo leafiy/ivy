@@ -20,7 +20,11 @@ struct IvySettingsView: View {
                     }
                 }
             )
-            IvySettingsPane(L("Sync"), icon: .sync, height: 610) {
+            LeafiyUI.SettingsPane(
+                L("Sync"),
+                icon: Image(nsImage: IvyIcon.sync.nsImage),
+                height: LeafiyDesign.Size.settingsPaneHeight
+            ) {
                 AccountSettingsContent(
                     controller: model.accountController,
                     namespace: settingsBinding(\.namespace)
@@ -121,18 +125,20 @@ private struct AccountSettingsContent: View {
                 TextField(L("Namespace"), text: $namespace)
                     .onSubmit {
                         guard hasNamespace, !controller.isWorking else { return }
-                        controller.enter(namespace: namespace)
+                        controller.join(namespace: namespace)
                     }
                 Text(L("Public and password-free. Anyone with this namespace can enter and share it."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Button {
-                    controller.enter(namespace: namespace)
-                } label: {
-                    IvyIconLabel(L("Continue with Ivy"), icon: .leaf, iconSize: 16)
+                HStack {
+                    Button(L("Join Space")) {
+                        controller.join(namespace: namespace)
+                    }
+                    Button(L("Create Space")) {
+                        controller.create(namespace: namespace)
+                    }
                 }
-                .buttonStyle(ProviderSignInButtonStyle())
                 .disabled(controller.isWorking || !controller.providers.passwordless.enabled || !hasNamespace)
             }
 
@@ -145,7 +151,6 @@ private struct AccountSettingsContent: View {
                 } label: {
                     Text(L("Continue with Google"))
                 }
-                .buttonStyle(ProviderSignInButtonStyle())
                 .disabled(controller.isWorking || !controller.providers.google.enabled)
 
                 if !controller.providers.google.enabled {
@@ -246,27 +251,6 @@ private struct AccountSettingsContent: View {
     }
 }
 
-private struct ProviderSignInButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 14, weight: .medium))
-            .foregroundStyle(.black)
-            .frame(maxWidth: .infinity, minHeight: 40, maxHeight: 40)
-            .background {
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(.white)
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(.black.opacity(0.82), lineWidth: 1)
-            }
-            .opacity(isEnabled ? 1 : 0.45)
-            .scaleEffect(configuration.isPressed ? 0.99 : 1)
-            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
-    }
-}
 
 private struct CapacityRow: View {
     let title: String
@@ -292,33 +276,3 @@ private struct CapacityRow: View {
     }
 }
 
-/// A family-sized settings tab whose icon comes from Ivy's unified Lucide set.
-private struct IvySettingsPane<Content: View>: View {
-    let title: String
-    let icon: IvyIcon
-    let height: CGFloat
-    let content: Content
-
-    init(
-        _ title: String,
-        icon: IvyIcon,
-        height: CGFloat = LeafiyDesign.Size.settingsPaneHeight,
-        @ViewBuilder content: () -> Content
-    ) {
-        self.title = title
-        self.icon = icon
-        self.height = height
-        self.content = content()
-    }
-
-    var body: some View {
-        Form {
-            content
-        }
-        .formStyle(.grouped)
-        .frame(width: LeafiyDesign.Size.settingsPaneWidth, height: height)
-        .tabItem {
-            IvyIconLabel(title, icon: icon, iconSize: 16)
-        }
-    }
-}

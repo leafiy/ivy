@@ -25,7 +25,7 @@ final class NotesController: ObservableObject {
 
     /// Returns the signed-in sync token; attachments cannot upload without one.
     /// Injected by the app delegate once the account controller exists.
-    var authTokenProvider: (@MainActor () -> String?)?
+    var authTokenProvider: (@MainActor () async -> String?)?
 
     private let store: NoteStore?
     var noteStore: NoteStore? { store }
@@ -424,7 +424,7 @@ final class NotesController: ObservableObject {
                 current = stored
             }
             let nextLevel: NoteWindowLevel = current.windowLevel == .pinned ? .normal : .pinned
-            guard let updated = try store.updateWindowState(id: id, level: nextLevel) else { return }
+            guard let updated = try store.updateWindowLevel(id: id, level: nextLevel) else { return }
             replaceCachedNote(updated)
             openPanel(for: updated)
             errorMessage = nil
@@ -540,16 +540,16 @@ final class NotesController: ObservableObject {
             presentAttachmentError(L("Attach at most 50 files at a time."))
             return
         }
-        guard let token = authTokenProvider?() else {
-            discardPendingMarkers(noteID: noteID, for: pending)
-            presentAttachmentError(L("Sign in in Settings before adding attachments."))
-            return
-        }
 
         let newBytes = pending.reduce(Int64(0)) { $0 + Int64($1.data.count) }
         let queuedBytes = uploadQueue.reduce(Int64(0)) { $0 + Int64($1.file.data.count) }
 
         Task {
+            guard let token = await authTokenProvider?() else {
+                discardPendingMarkers(noteID: noteID, for: pending)
+                presentAttachmentError(L("Sign in in Settings before adding attachments."))
+                return
+            }
             do {
                 let quota = try await syncClient.attachmentQuota(token: token)
                 guard newBytes + queuedBytes <= quota.remainingBytes else {
@@ -612,7 +612,7 @@ final class NotesController: ObservableObject {
     }
 
     private func uploadQueuedItem(_ item: QueuedNoteUpload) async -> Bool {
-        guard let token = authTokenProvider?() else {
+        guard let token = await authTokenProvider?() else {
             discardPendingMarker(noteID: item.noteID, markerID: item.file.inlineMarkerID)
             return false
         }
@@ -690,8 +690,8 @@ final class NotesController: ObservableObject {
             return
         }
 
-        guard let token = authTokenProvider?() else { return }
         Task {
+            guard let token = await authTokenProvider?() else { return }
             do {
                 try await syncClient.deleteAttachment(token: token, url: attachment.url)
             } catch SyncClientError.server(let statusCode, _) where statusCode == 404 {

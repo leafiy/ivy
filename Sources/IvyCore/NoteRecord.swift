@@ -76,8 +76,9 @@ public struct NoteRecord: Codable, Equatable, Identifiable, Sendable {
     public static let minimumFontSize: Double = 10
     public static let maximumFontSize: Double = 24
 
-    /// Device-local window state. Excluded from database sync snapshots.
+    /// Geometry, opacity, font size, and visibility are device-local.
     public var windowFrame: NoteWindowFrame?
+    /// Pin state travels with note color and content in database snapshots.
     public var windowLevel: NoteWindowLevel
     public var windowOpacity: Double
     public var fontSize: Double

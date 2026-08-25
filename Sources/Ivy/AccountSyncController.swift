@@ -4,6 +4,25 @@ import Foundation
 import IvyCore
 import Security
 
+struct ManualSyncThrottle {
+    static let minimumInterval: TimeInterval = 10 * 60
+    let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    func consume(accountID: String, now: Date = Date()) -> Bool {
+        let key = "ivy.last-manual-sync.\(accountID)"
+        if let lastSync = defaults.object(forKey: key) as? Date,
+           now.timeIntervalSince(lastSync) < Self.minimumInterval {
+            return false
+        }
+        defaults.set(now, forKey: key)
+        return true
+    }
+}
+
 @MainActor
 final class AccountSyncController: NSObject,
     ObservableObject,
@@ -25,9 +44,11 @@ final class AccountSyncController: NSObject,
     private weak var owner: IvyModel?
     private let noteStore: NoteStore?
     private let tokenStore = AuthTokenStore()
+    private let manualSyncThrottle = ManualSyncThrottle()
     private var contentObserver: NSObjectProtocol?
     private var syncTask: Task<Void, Never>?
     private var oauthSession: ASWebAuthenticationSession?
+    private var refreshTask: Task<AuthResponse, Error>?
     private var changeGeneration = 0
     private var started = false
     private var lastUploadedSnapshotHash: UInt64?
@@ -52,10 +73,10 @@ final class AccountSyncController: NSObject,
         syncTask?.cancel()
     }
 
-    /// Current sync token for API calls made outside this controller
-    /// (attachment uploads). Nil when signed out.
-    func clientAuthToken() -> String? {
-        tokenStore.load()
+    /// Current access token for API calls made outside this controller
+    /// (attachment uploads). Refreshes the device session before expiry.
+    func clientAuthToken() async -> String? {
+        try? await validAccessToken()
     }
 
     var noteDatabaseUsageMB: Double {
@@ -80,8 +101,9 @@ final class AccountSyncController: NSObject,
         Task {
             await refreshLocalDatabaseSize()
             await loadProviderConfiguration()
-            guard let token = tokenStore.load() else { return }
+            guard tokenStore.load() != nil else { return }
             do {
+                let token = try await validAccessToken()
                 let user = try await client().me(token: token)
                 account = user
                 syncStatus = L("Checking for changes")
@@ -103,9 +125,15 @@ final class AccountSyncController: NSObject,
         }
     }
 
-    func enter(namespace: String) {
+    func join(namespace: String) {
         performAuth {
-            try await self.client().enter(namespace: namespace, device: self.device())
+            try await self.client().joinNamespace(namespace: namespace, device: self.device())
+        }
+    }
+
+    func create(namespace: String) {
+        performAuth {
+            try await self.client().createNamespace(namespace: namespace, device: self.device())
         }
     }
 
@@ -141,12 +169,16 @@ final class AccountSyncController: NSObject,
     }
 
     func syncNow() {
+        guard let account, manualSyncThrottle.consume(accountID: account.id) else { return }
         syncTask?.cancel()
         syncTask = Task { await synchronize() }
     }
 
     func signOut() {
         syncTask?.cancel()
+        refreshTask?.cancel()
+        let storedSession = tokenStore.load()
+        let currentDevice = device()
         tokenStore.delete()
         account = nil
         lastUploadedSnapshotHash = nil
@@ -154,6 +186,14 @@ final class AccountSyncController: NSObject,
         owner?.updateSettings {
             $0.syncDatabaseVersion = 0
             $0.syncDatabaseDirty = false
+        }
+        if let storedSession {
+            Task {
+                try? await client().logout(
+                    refreshToken: storedSession.refreshToken,
+                    device: currentDevice
+                )
+            }
         }
     }
 
@@ -183,11 +223,8 @@ final class AccountSyncController: NSObject,
     /// then push our dirty notes on top of that version. A 409 from the server
     /// means another device pushed in between — pull again, merge, retry.
     private func synchronize() async {
-        guard
-            let noteStore,
-            let owner,
-            let token = tokenStore.load()
-        else { return }
+        guard let noteStore, let owner else { return }
+        guard let token = try? await validAccessToken() else { return }
 
         isWorking = true
         defer { isWorking = false }
@@ -325,7 +362,7 @@ final class AccountSyncController: NSObject,
     /// Local notes carry their own per-note dirty flags, so anything created
     /// offline merges into the account instead of being replaced.
     private func completeAuth(_ response: AuthResponse) async throws {
-        try tokenStore.save(response.token)
+        try tokenStore.save(response)
         account = response.user
         lastUploadedSnapshotHash = nil
         owner?.updateSettings {
@@ -338,18 +375,35 @@ final class AccountSyncController: NSObject,
         await synchronize()
     }
 
-    private func completeAuthToken(_ token: String) async throws {
-        try tokenStore.save(token)
-        let user = try await client().me(token: token)
-        account = user
-        lastUploadedSnapshotHash = nil
-        owner?.updateSettings {
-            if let namespace = user.namespace {
-                $0.namespace = namespace
-            }
-            $0.syncDatabaseVersion = 0
+    private func validAccessToken() async throws -> String {
+        guard let stored = tokenStore.load() else {
+            throw AccountSyncError(message: L("Not signed in"))
         }
-        await synchronize()
+        if stored.expiresAt.timeIntervalSinceNow > 60 {
+            return stored.accessToken
+        }
+        if let refreshTask {
+            return try await refreshTask.value.accessToken
+        }
+
+        let task = Task {
+            try await self.client().refreshSession(
+                refreshToken: stored.refreshToken,
+                device: self.device()
+            )
+        }
+        refreshTask = task
+        defer { refreshTask = nil }
+        do {
+            let response = try await task.value
+            try tokenStore.save(response)
+            account = response.user
+            return response.accessToken
+        } catch {
+            tokenStore.delete()
+            account = nil
+            throw error
+        }
     }
 
     private func performAuth(_ operation: @escaping () async throws -> AuthResponse) {
@@ -393,8 +447,9 @@ final class AccountSyncController: NSObject,
             }
         }
         let values = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)?.queryItems ?? []
-        if let token = values.first(where: { $0.name == "token" })?.value {
-            try await completeAuthToken(token)
+        if let code = values.first(where: { $0.name == "code" })?.value {
+            let response = try await client().exchangeOAuthCode(code)
+            try await completeAuth(response)
             return
         }
         let errorMessage = values.first(where: { $0.name == "message" })?.value ?? failureMessage
@@ -428,11 +483,23 @@ private struct AccountSyncError: LocalizedError {
     var errorDescription: String? { message }
 }
 
+private struct StoredClientSession: Codable {
+    let accessToken: String
+    let refreshToken: String
+    let expiresAt: Date
+
+    init(response: AuthResponse) {
+        accessToken = response.accessToken
+        refreshToken = response.refreshToken
+        expiresAt = Date().addingTimeInterval(TimeInterval(response.expiresIn))
+    }
+}
+
 private final class AuthTokenStore {
     private let service = "com.qiansmile.ivy.sync"
     private let account = "client-token"
 
-    func load() -> String? {
+    func load() -> StoredClientSession? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -442,22 +509,28 @@ private final class AuthTokenStore {
         ]
         var result: AnyObject?
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+              let data = result as? Data,
+              let session = try? JSONDecoder().decode(StoredClientSession.self, from: data)
+        else {
+            delete()
+            return nil
+        }
+        return session
     }
 
-    func save(_ token: String) throws {
+    func save(_ response: AuthResponse) throws {
         delete()
+        let data = try JSONEncoder().encode(StoredClientSession(response: response))
         let attributes: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
-            kSecValueData as String: Data(token.utf8),
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
         let status = SecItemAdd(attributes as CFDictionary, nil)
         guard status == errSecSuccess else {
-            throw AccountSyncError(message: "Keychain error \(status)")
+            throw AccountSyncError(message: "Keychain error \\(status)")
         }
     }
 

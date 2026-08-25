@@ -50,7 +50,7 @@ final class NoteStoreTests: XCTestCase {
         )
     }
 
-    func testWindowStateSkipsDirtyAndSurvivesServerChanges() throws {
+    func testDeviceLocalWindowStateSkipsDirtyAndSurvivesServerChanges() throws {
         let fixture = try makeStore()
         defer { fixture.cleanup() }
         let createdAt = Date(timeIntervalSince1970: 1_000)
@@ -63,14 +63,12 @@ final class NoteStoreTests: XCTestCase {
             try fixture.store.updateWindowState(
                 id: created.id,
                 frame: frame,
-                level: .pinned,
                 opacity: 0.42,
                 fontSize: 18,
                 closed: true
             )
         )
         XCTAssertEqual(updated.windowFrame, frame)
-        XCTAssertEqual(updated.windowLevel, .pinned)
         XCTAssertEqual(updated.windowOpacity, 0.42, accuracy: 0.001)
         XCTAssertEqual(updated.fontSize, 18)
         XCTAssertTrue(updated.closed)
@@ -89,10 +87,43 @@ final class NoteStoreTests: XCTestCase {
         let merged = try XCTUnwrap(try fixture.store.note(id: created.id))
         XCTAssertEqual(merged.text, "Server edit")
         XCTAssertEqual(merged.windowFrame, frame)
-        XCTAssertEqual(merged.windowLevel, .pinned)
         XCTAssertEqual(merged.windowOpacity, 0.42, accuracy: 0.001)
         XCTAssertEqual(merged.fontSize, 18)
         XCTAssertTrue(merged.closed)
+    }
+
+    func testWindowLevelMarksDirtyAndUsesLastWriterWins() throws {
+        let fixture = try makeStore()
+        defer { fixture.cleanup() }
+        let createdAt = Date(timeIntervalSince1970: 1_000)
+        let pinnedAt = Date(timeIntervalSince1970: 2_000)
+        let created = try fixture.store.create(text: "Pin me", now: createdAt)
+        try fixture.store.markClean(ids: [created.id])
+
+        let pinned = try XCTUnwrap(
+            try fixture.store.updateWindowLevel(id: created.id, level: .pinned, now: pinnedAt)
+        )
+        XCTAssertEqual(pinned.windowLevel, .pinned)
+        XCTAssertEqual(pinned.updatedAt, pinnedAt)
+        XCTAssertTrue(pinned.dirty)
+
+        try fixture.store.applyServerChange(NoteRecord(
+            id: created.id,
+            text: "Older server copy",
+            updatedAt: Date(timeIntervalSince1970: 1_500),
+            windowLevel: .normal
+        ))
+        XCTAssertEqual(try fixture.store.note(id: created.id)?.windowLevel, .pinned)
+
+        try fixture.store.applyServerChange(NoteRecord(
+            id: created.id,
+            text: "Newer server copy",
+            updatedAt: Date(timeIntervalSince1970: 3_000),
+            windowLevel: .normal
+        ))
+        let merged = try XCTUnwrap(try fixture.store.note(id: created.id))
+        XCTAssertEqual(merged.windowLevel, .normal)
+        XCTAssertFalse(merged.dirty)
     }
 
     func testMigratesLegacyDatabaseAddingWindowStateColumns() throws {
@@ -178,7 +209,7 @@ final class NoteStoreTests: XCTestCase {
         XCTAssertFalse(applied.dirty)
     }
 
-    func testSyncSnapshotContainsOnlyPortableNoteDataAndRestoresLocalWindowState() throws {
+    func testSyncSnapshotCarriesAppearanceAndRestoresDeviceLocalWindowState() throws {
         let source = try makeStore()
         defer { source.cleanup() }
         let destination = try makeStore()
@@ -188,13 +219,14 @@ final class NoteStoreTests: XCTestCase {
             color: NoteColor.green.rawValue,
             images: ["https://oss.example/attachment.png"]
         )
+        _ = try source.store.updateWindowLevel(id: note.id, level: .pinned)
         _ = try destination.store.create(text: "Local", now: Date(timeIntervalSince1970: 1))
         let localCopy = NoteRecord(
             id: note.id,
             text: "Old portable",
             updatedAt: Date(timeIntervalSince1970: 1),
             windowFrame: NoteWindowFrame(x: 20, y: 30, width: 320, height: 240),
-            windowLevel: .pinned,
+            windowLevel: .normal,
             windowOpacity: 0.4,
             fontSize: 20,
             closed: true
@@ -218,12 +250,13 @@ final class NoteStoreTests: XCTestCase {
         }
         XCTAssertEqual(
             names,
-            ["uuid", "text", "color", "images", "type", "updated_at", "deleted_at", "attachments"]
+            ["uuid", "text", "color", "images", "type", "updated_at", "deleted_at", "attachments", "window_level"]
         )
 
         try destination.store.replaceContent(from: snapshotURL)
         let restored = try XCTUnwrap(try destination.store.note(id: note.id))
         XCTAssertEqual(restored.text, "Portable")
+        XCTAssertEqual(restored.color, NoteColor.green.rawValue)
         XCTAssertEqual(restored.images, ["https://oss.example/attachment.png"])
         XCTAssertEqual(restored.windowFrame, localCopy.windowFrame)
         XCTAssertEqual(restored.windowLevel, .pinned)
@@ -277,9 +310,16 @@ final class NoteStoreTests: XCTestCase {
         XCTAssertFalse(restored.dirty)
     }
 
-    func testReplaceContentAcceptsLegacySnapshotWithoutAttachmentsColumn() throws {
+    func testReplaceContentAcceptsLegacySnapshotWithoutAttachmentsOrPinState() throws {
         let destination = try makeStore()
         defer { destination.cleanup() }
+        try destination.store.save(NoteRecord(
+            id: "legacy-id",
+            text: "Local copy",
+            updatedAt: Date(timeIntervalSince1970: 500),
+            dirty: false,
+            windowLevel: .pinned
+        ))
 
         let snapshotURL = destination.directory.appendingPathComponent("legacy-sync.sqlite")
         var handle: OpaquePointer?
@@ -304,6 +344,8 @@ final class NoteStoreTests: XCTestCase {
 
         let restored = try XCTUnwrap(try destination.store.note(id: "legacy-id"))
         XCTAssertEqual(restored.text, "Synced from old app")
+        XCTAssertEqual(restored.color, NoteColor.blue.rawValue)
+        XCTAssertEqual(restored.windowLevel, .pinned)
         XCTAssertTrue(restored.attachments.isEmpty)
         XCTAssertFalse(restored.dirty)
     }
@@ -375,7 +417,7 @@ final class NoteStoreTests: XCTestCase {
         XCTAssertNotNil(tombstoned.deletedAt, "Newer server tombstones delete local copies")
     }
 
-    func testMergeContentKeepsLocalWindowState() throws {
+    func testMergeContentKeepsDeviceLocalWindowStateAndAppliesSyncedPin() throws {
         let server = try makeStore()
         defer { server.cleanup() }
         let local = try makeStore()
@@ -383,7 +425,8 @@ final class NoteStoreTests: XCTestCase {
 
         try server.store.save(NoteRecord(
             id: "note", text: "server text",
-            updatedAt: Date(timeIntervalSince1970: 2_000)
+            updatedAt: Date(timeIntervalSince1970: 2_000),
+            windowLevel: .normal
         ))
         try local.store.save(NoteRecord(
             id: "note", text: "old",
@@ -399,7 +442,7 @@ final class NoteStoreTests: XCTestCase {
         let merged = try XCTUnwrap(try local.store.note(id: "note"))
         XCTAssertEqual(merged.text, "server text")
         XCTAssertEqual(merged.windowFrame, NoteWindowFrame(x: 10, y: 20, width: 300, height: 200))
-        XCTAssertEqual(merged.windowLevel, .pinned)
+        XCTAssertEqual(merged.windowLevel, .normal)
     }
 
     func testHasDirtyNotes() throws {

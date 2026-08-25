@@ -9,8 +9,8 @@ public final class NoteStore {
     private let database: OpaquePointer
     public let fileURL: URL
 
-    /// Posted only when syncable note content changes. Device-local window
-    /// state and font size do not trigger a sync.
+    /// Posted when syncable note content or state changes. Device-local window
+    /// geometry, opacity, font size, and visibility do not trigger a sync.
     public static let contentDidChangeNotification = Notification.Name("IvyNoteStoreContentDidChange")
 
     /// `~/Library/Application Support/Ivy/notes.sqlite`.
@@ -87,8 +87,7 @@ public final class NoteStore {
         "CREATE INDEX IF NOT EXISTS notes_dirty ON notes(dirty)"
     ]
 
-    /// Device-local note-state columns arrived after the first schema; older
-    /// databases gain them in place. These values never enter the sync payload.
+    /// Columns added after the first schema; older databases gain them in place.
     private static let columnMigrations: [(column: String, ddl: String)] = [
         ("frame_x", "ALTER TABLE notes ADD COLUMN frame_x REAL"),
         ("frame_y", "ALTER TABLE notes ADD COLUMN frame_y REAL"),
@@ -245,21 +244,17 @@ public final class NoteStore {
         try fetch(sql: "\(Self.selectColumns) WHERE dirty = 1 ORDER BY updated_at ASC") { _ in }
     }
 
-    /// Persists device-local note state without touching `updatedAt`/`dirty`:
-    /// moving, pinning, resizing text, or closing a panel is not a content edit
-    /// and must not sync.
+    /// Persists device-local note state without touching `updatedAt`/`dirty`.
     @discardableResult
     public func updateWindowState(
         id: String,
         frame: NoteWindowFrame? = nil,
-        level: NoteWindowLevel? = nil,
         opacity: Double? = nil,
         fontSize: Double? = nil,
         closed: Bool? = nil
     ) throws -> NoteRecord? {
         guard var note = try note(id: id) else { return nil }
         if let frame { note.windowFrame = frame }
-        if let level { note.windowLevel = level }
         if let opacity { note.windowOpacity = Self.normalizedOpacity(opacity) }
         if let fontSize { note.fontSize = Self.normalizedFontSize(fontSize) }
         if let closed { note.closed = closed }
@@ -267,13 +262,28 @@ public final class NoteStore {
         return note
     }
 
+    /// Pin state is portable note state: changing it advances the note version,
+    /// marks the row dirty, and schedules database sync.
+    @discardableResult
+    public func updateWindowLevel(
+        id: String,
+        level: NoteWindowLevel,
+        now: Date = Date()
+    ) throws -> NoteRecord? {
+        guard var note = try note(id: id) else { return nil }
+        note.windowLevel = level
+        note.updatedAt = now
+        note.dirty = true
+        try save(note)
+        return note
+    }
+
     public func applyServerChange(_ incoming: NoteRecord) throws {
         var serverRecord = incoming
         if let local = try note(id: incoming.id) {
             if local.updatedAt > incoming.updatedAt { return }
-            // Server payloads never carry device-local note state; keep ours.
+            // Keep only state that is meaningless or intentionally local across devices.
             serverRecord.windowFrame = local.windowFrame
-            serverRecord.windowLevel = local.windowLevel
             serverRecord.windowOpacity = local.windowOpacity
             serverRecord.fontSize = local.fontSize
             serverRecord.closed = local.closed
@@ -298,8 +308,8 @@ public final class NoteStore {
         }
     }
 
-    /// Exports one portable SQLite database containing only syncable note data.
-    /// Device-local window and font state never enter the payload.
+    /// Exports one portable SQLite database containing syncable note content,
+    /// color, and pin state. Device-local window state stays out of the payload.
     public func makeSyncSnapshot(at destinationURL: URL) throws {
         try? FileManager.default.removeItem(at: destinationURL)
 
@@ -326,7 +336,8 @@ public final class NoteStore {
             type TEXT NOT NULL,
             updated_at REAL NOT NULL,
             deleted_at REAL,
-            attachments TEXT NOT NULL DEFAULT '[]'
+            attachments TEXT NOT NULL DEFAULT '[]',
+            window_level TEXT NOT NULL DEFAULT 'normal'
         );
         CREATE INDEX notes_updated_at ON notes(updated_at);
         """
@@ -337,10 +348,10 @@ public final class NoteStore {
         var sourceStatement: OpaquePointer?
         var destinationStatement: OpaquePointer?
         let sourceSQL = """
-            SELECT uuid, text, color, images, type, updated_at, deleted_at, attachments
+            SELECT uuid, text, color, images, type, updated_at, deleted_at, attachments, window_level
             FROM notes ORDER BY uuid
             """
-        let insertSQL = "INSERT INTO notes VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"
+        let insertSQL = "INSERT INTO notes VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
         try check(sqlite3_prepare_v2(database, sourceSQL, -1, &sourceStatement, nil))
         guard let sourceStatement else { throw error(SQLITE_ERROR) }
         defer { sqlite3_finalize(sourceStatement) }
@@ -383,6 +394,10 @@ public final class NoteStore {
                     sqlite3_bind_text(destinationStatement, 8, Self.text(sourceStatement, 7), -1, SQLITE_TRANSIENT),
                     destination
                 )
+                try Self.checkDestination(
+                    sqlite3_bind_text(destinationStatement, 9, Self.text(sourceStatement, 8), -1, SQLITE_TRANSIENT),
+                    destination
+                )
                 guard sqlite3_step(destinationStatement) == SQLITE_DONE else {
                     throw Self.databaseError(destination, code: sqlite3_errcode(destination))
                 }
@@ -397,8 +412,10 @@ public final class NoteStore {
     }
 
     /// Reads every row of a portable snapshot database as a clean record.
-    /// Device-local state stays at defaults; callers graft it back as needed.
-    private static func readSnapshot(at snapshotURL: URL) throws -> [NoteRecord] {
+    /// Older snapshots default missing attachments and pin state safely.
+    private static func readSnapshot(
+        at snapshotURL: URL
+    ) throws -> (records: [NoteRecord], includesWindowLevel: Bool) {
         var source: OpaquePointer?
         let openStatus = sqlite3_open_v2(snapshotURL.path, &source, SQLITE_OPEN_READONLY, nil)
         guard openStatus == SQLITE_OK, let source else {
@@ -407,16 +424,16 @@ public final class NoteStore {
         }
         defer { sqlite3_close_v2(source) }
 
-        // Snapshots uploaded by app versions that predate attachments have no
-        // such column; read them as attachment-free rather than failing sync.
         let snapshotHasAttachments = try tableHasColumn(source, table: "notes", column: "attachments")
+        let snapshotHasWindowLevel = try tableHasColumn(source, table: "notes", column: "window_level")
+        let attachmentsColumn = snapshotHasAttachments ? "attachments" : "'[]'"
+        let windowLevelColumn = snapshotHasWindowLevel ? "window_level" : "'normal'"
         var statement: OpaquePointer?
-        let sql = snapshotHasAttachments
-            ? """
-              SELECT uuid, text, color, images, type, updated_at, deleted_at, attachments
-              FROM notes ORDER BY updated_at
-              """
-            : "SELECT uuid, text, color, images, type, updated_at, deleted_at FROM notes ORDER BY updated_at"
+        let sql = """
+            SELECT uuid, text, color, images, type, updated_at, deleted_at,
+                   \(attachmentsColumn), \(windowLevelColumn)
+            FROM notes ORDER BY updated_at
+            """
         let prepareStatus = sqlite3_prepare_v2(source, sql, -1, &statement, nil)
         guard prepareStatus == SQLITE_OK, let statement else {
             throw Self.databaseError(source, code: prepareStatus)
@@ -433,33 +450,37 @@ public final class NoteStore {
                 text: Self.text(statement, 1),
                 color: Self.text(statement, 2),
                 images: try Self.images(from: Self.text(statement, 3)),
-                attachments: snapshotHasAttachments ? Self.attachments(from: Self.text(statement, 7)) : [],
+                attachments: Self.attachments(from: Self.text(statement, 7)),
                 type: Self.text(statement, 4),
                 updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 5)),
                 deletedAt: sqlite3_column_type(statement, 6) == SQLITE_NULL
                     ? nil
                     : Date(timeIntervalSince1970: sqlite3_column_double(statement, 6)),
-                dirty: false
+                dirty: false,
+                windowLevel: NoteWindowLevel.value(for: Self.text(statement, 8))
             ))
         }
-        return incoming
+        return (incoming, snapshotHasWindowLevel)
     }
 
-    /// Replaces syncable note content from a portable database while retaining
-    /// this Mac's local window and font state for note IDs it already knows.
+    /// Replaces syncable note content and state from a portable database while
+    /// retaining this Mac's local state for note IDs it already knows.
     /// Only safe when no local note is dirty; otherwise use `mergeContent(from:)`.
     public func replaceContent(from snapshotURL: URL) throws {
         let localState = Dictionary(uniqueKeysWithValues: try fetchAll(includeDeleted: true).map {
-            ($0.id, ($0.windowFrame, $0.windowLevel, $0.windowOpacity, $0.fontSize, $0.closed))
+            ($0.id, ($0.windowFrame, $0.windowOpacity, $0.fontSize, $0.closed, $0.windowLevel))
         })
-        var incoming = try Self.readSnapshot(at: snapshotURL)
+        let snapshot = try Self.readSnapshot(at: snapshotURL)
+        var incoming = snapshot.records
         for index in incoming.indices {
             guard let state = localState[incoming[index].id] else { continue }
             incoming[index].windowFrame = state.0
-            incoming[index].windowLevel = state.1
-            incoming[index].windowOpacity = state.2
-            incoming[index].fontSize = state.3
-            incoming[index].closed = state.4
+            incoming[index].windowOpacity = state.1
+            incoming[index].fontSize = state.2
+            incoming[index].closed = state.3
+            if !snapshot.includesWindowLevel {
+                incoming[index].windowLevel = state.4
+            }
         }
 
         try execute("BEGIN IMMEDIATE")
@@ -479,10 +500,15 @@ public final class NoteStore {
     /// everything else adopts the snapshot row. Deletions travel as
     /// `deleted_at` tombstones, and notes that exist only locally survive.
     public func mergeContent(from snapshotURL: URL) throws {
-        let incoming = try Self.readSnapshot(at: snapshotURL)
+        let snapshot = try Self.readSnapshot(at: snapshotURL)
         try execute("BEGIN IMMEDIATE")
         do {
-            for record in incoming { try applyServerChange(record) }
+            for var record in snapshot.records {
+                if !snapshot.includesWindowLevel, let local = try note(id: record.id) {
+                    record.windowLevel = local.windowLevel
+                }
+                try applyServerChange(record)
+            }
             try execute("COMMIT")
         } catch {
             try? execute("ROLLBACK")

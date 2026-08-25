@@ -27,6 +27,15 @@ public struct NamespaceLoginRequest: Codable, Equatable, Sendable {
         self.device = device
     }
 }
+public struct RefreshSessionRequest: Codable, Equatable, Sendable {
+    public var refreshToken: String
+    public var device: SyncDevice
+}
+
+public struct OAuthCodeExchangeRequest: Codable, Equatable, Sendable {
+    public var code: String
+}
+
 
 public struct OAuthStartRequest: Codable, Equatable, Sendable {
     public var device: SyncDevice
@@ -88,7 +97,9 @@ public struct OAuthStartResponse: Codable, Equatable, Sendable {
 }
 
 public struct AuthResponse: Codable, Equatable, Sendable {
-    public var token: String
+    public var accessToken: String
+    public var refreshToken: String
+    public var expiresIn: Int
     public var created: Bool
     public var user: AuthUser
 }
@@ -217,6 +228,29 @@ public struct AttachmentUploadFile: Equatable, Sendable {
     }
 }
 
+private struct AttachmentUploadAuthorization: Decodable {
+    var uploadURL: URL
+    var authorization: String
+    var filePath: String
+}
+
+private struct DirectAttachmentUploadResponse: Decodable {
+    var urls: [URL]
+    var uuids: [String]
+}
+
+private struct AttachmentRegistrationRequest: Encodable {
+    struct Item: Encodable {
+        var url: String
+        var uuid: String
+        var name: String
+        var sizeBytes: Int64
+        var contentType: String
+    }
+
+    var files: [Item]
+}
+
 public struct AttachmentUploadResponse: Codable, Equatable, Sendable {
     public var urls: [URL]
     public var uuids: [String]
@@ -260,11 +294,7 @@ public struct AttachmentDeleteResponse: Codable, Equatable, Sendable {
 }
 
 public final class SyncClient: @unchecked Sendable {
-    #if DEBUG || IVY_DEVELOPMENT_API
-    public static let apiBaseURL = URL(string: "http://192.168.52.4:7788")!
-    #else
-    public static let apiBaseURL = URL(string: "https://ivy-api.tatools.cn")!
-    #endif
+    public static let apiBaseURL = URL(string: "https://ivy-api.leafiy.com")!
 
     private let baseURL: URL
     private let session: URLSession
@@ -292,8 +322,18 @@ public final class SyncClient: @unchecked Sendable {
         try await send(makeRequest(path: "/api/v1/auth/config", method: "GET"), decoding: AuthProviderConfiguration.self)
     }
 
-    public func enter(namespace: String, device: SyncDevice) async throws -> AuthResponse {
-        try await send(makeNamespaceRequest(namespace: namespace, device: device), decoding: AuthResponse.self)
+    public func joinNamespace(namespace: String, device: SyncDevice) async throws -> AuthResponse {
+        try await send(
+            makeNamespaceLoginRequest(namespace: namespace, device: device),
+            decoding: AuthResponse.self
+        )
+    }
+
+    public func createNamespace(namespace: String, device: SyncDevice) async throws -> AuthResponse {
+        try await send(
+            makeNamespaceCreationRequest(namespace: namespace, device: device),
+            decoding: AuthResponse.self
+        )
     }
 
     public func login(email: String, password: String, device: SyncDevice) async throws -> AuthResponse {
@@ -348,6 +388,32 @@ public final class SyncClient: @unchecked Sendable {
     public func startGoogleOAuth(device: SyncDevice) async throws -> URL {
         let request = try makeGoogleOAuthStartRequest(device: device)
         return try await send(request, decoding: OAuthStartResponse.self).authorizationURL
+    }
+    public func exchangeOAuthCode(_ code: String) async throws -> AuthResponse {
+        let request = try makeJSONRequest(
+            path: "/api/v1/auth/oauth/exchange",
+            bearerToken: nil,
+            body: OAuthCodeExchangeRequest(code: code)
+        )
+        return try await send(request, decoding: AuthResponse.self)
+    }
+
+    public func refreshSession(refreshToken: String, device: SyncDevice) async throws -> AuthResponse {
+        let request = try makeJSONRequest(
+            path: "/api/v1/auth/refresh",
+            bearerToken: nil,
+            body: RefreshSessionRequest(refreshToken: refreshToken, device: device)
+        )
+        return try await send(request, decoding: AuthResponse.self)
+    }
+
+    public func logout(refreshToken: String, device: SyncDevice) async throws {
+        let request = try makeJSONRequest(
+            path: "/api/v1/auth/logout",
+            bearerToken: nil,
+            body: RefreshSessionRequest(refreshToken: refreshToken, device: device)
+        )
+        try await sendWithoutResponse(request)
     }
 
     public func me(token: String) async throws -> AuthUser {
@@ -417,8 +483,19 @@ public final class SyncClient: @unchecked Sendable {
         guard totalBytes <= SyncLimits.attachmentBytes else {
             throw SyncClientError.attachmentsTooLarge(bytes: totalBytes)
         }
+
+        let authorization = try await send(
+            makeRequest(
+                path: "/api/v1/upload/authorization",
+                method: "GET",
+                bearerToken: token
+            ),
+            decoding: AttachmentUploadAuthorization.self
+        )
+
         let boundary = "ivy-attachments-\(UUID().uuidString)"
         var body = Data()
+        body.appendMultipartField(name: "filePath", value: authorization.filePath, boundary: boundary)
         for file in files {
             body.appendMultipartFile(
                 field: "files",
@@ -429,10 +506,41 @@ public final class SyncClient: @unchecked Sendable {
             )
         }
         body.appendString("--\(boundary)--\r\n")
-        var request = makeRequest(path: "/api/v1/upload/files", method: "POST", bearerToken: token)
-        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        request.httpBody = body
-        return try await send(request, decoding: AttachmentUploadResponse.self)
+
+        var uploadRequest = URLRequest(url: authorization.uploadURL)
+        uploadRequest.httpMethod = "POST"
+        uploadRequest.setValue("application/json", forHTTPHeaderField: "Accept")
+        uploadRequest.setValue(
+            "multipart/form-data; boundary=\(boundary)",
+            forHTTPHeaderField: "Content-Type"
+        )
+        uploadRequest.setValue(
+            authorization.authorization,
+            forHTTPHeaderField: "uploader-authorization"
+        )
+        uploadRequest.httpBody = body
+        let uploaded = try await send(uploadRequest, decoding: DirectAttachmentUploadResponse.self)
+
+        guard uploaded.urls.count == files.count, uploaded.uuids.count == files.count else {
+            throw SyncClientError.invalidResponse
+        }
+        let registration = AttachmentRegistrationRequest(
+            files: files.indices.map { index in
+                AttachmentRegistrationRequest.Item(
+                    url: uploaded.urls[index].absoluteString,
+                    uuid: uploaded.uuids[index],
+                    name: files[index].filename,
+                    sizeBytes: Int64(files[index].data.count),
+                    contentType: files[index].contentType
+                )
+            }
+        )
+        let registrationRequest = try makeJSONRequest(
+            path: "/api/v1/upload/files",
+            bearerToken: token,
+            body: registration
+        )
+        return try await send(registrationRequest, decoding: AttachmentUploadResponse.self)
     }
 
     /// Remaining attachment quota; clients must consult this before uploading.
@@ -453,9 +561,17 @@ public final class SyncClient: @unchecked Sendable {
         return try await send(request, decoding: AttachmentDeleteResponse.self)
     }
 
-    public func makeNamespaceRequest(namespace: String, device: SyncDevice) throws -> URLRequest {
+    public func makeNamespaceLoginRequest(namespace: String, device: SyncDevice) throws -> URLRequest {
         try makeJSONRequest(
-            path: "/api/v1/auth/login",
+            path: "/api/v1/auth/login/namespace",
+            bearerToken: nil,
+            body: NamespaceLoginRequest(namespace: namespace, device: device)
+        )
+    }
+
+    public func makeNamespaceCreationRequest(namespace: String, device: SyncDevice) throws -> URLRequest {
+        try makeJSONRequest(
+            path: "/api/v1/namespaces",
             bearerToken: nil,
             body: NamespaceLoginRequest(namespace: namespace, device: device)
         )
@@ -537,6 +653,15 @@ public final class SyncClient: @unchecked Sendable {
             throw SyncClientError.server(statusCode: httpResponse.statusCode, body: data)
         }
         return try decoder.decode(Response.self, from: data)
+    }
+    private func sendWithoutResponse(_ request: URLRequest) async throws {
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw SyncClientError.invalidResponse
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw SyncClientError.server(statusCode: httpResponse.statusCode, body: data)
+        }
     }
 }
 

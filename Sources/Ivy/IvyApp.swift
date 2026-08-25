@@ -153,7 +153,7 @@ final class AppDelegate: LeafiyAppDelegate {
         LeafiyApplicationPresentation.shared.apply(model.settings.applicationIconMode)
         notesController.loadExistingNotes(openPanels: !model.settings.allNotesCollapsed)
         notesController.authTokenProvider = { [weak self] in
-            self?.model.accountController.clientAuthToken()
+            await self?.model.accountController.clientAuthToken()
         }
         model.accountController.onDatabaseImported = { [weak self] in
             guard let self else { return }

@@ -6,30 +6,26 @@ import XCTest
 import IvyCore
 
 final class SyncClientTests: XCTestCase {
-    func testDefaultClientUsesBuildConfigurationAPIEndpoint() throws {
+    func testDefaultClientUsesProductionAPIEndpoint() throws {
         let client = SyncClient()
-        let request = try client.makeNamespaceRequest(
+        let request = try client.makeNamespaceLoginRequest(
             namespace: "test",
             device: SyncDevice(id: "device-1", name: "Mac")
         )
 
-        #if DEBUG || IVY_DEVELOPMENT_API
-        let expectedURL = "http://192.168.52.4:7788/api/v1/auth/login"
-        #else
-        let expectedURL = "https://ivy-api.tatools.cn/api/v1/auth/login"
-        #endif
+        let expectedURL = "https://ivy-api.leafiy.com/api/v1/auth/login/namespace"
 
         XCTAssertEqual(request.url?.absoluteString, expectedURL)
     }
 
     func testBuildsNamespaceRequestBody() throws {
         let client = SyncClient(baseURL: URL(string: "https://ivy.example")!)
-        let request = try client.makeNamespaceRequest(
+        let request = try client.makeNamespaceLoginRequest(
             namespace: "朋友的周末计划 ✨",
             device: SyncDevice(id: "device-1", name: "MacBook Pro")
         )
 
-        XCTAssertEqual(request.url?.absoluteString, "https://ivy.example/api/v1/auth/login")
+        XCTAssertEqual(request.url?.absoluteString, "https://ivy.example/api/v1/auth/login/namespace")
         XCTAssertEqual(request.httpMethod, "POST")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
 
@@ -40,6 +36,17 @@ final class SyncClientTests: XCTestCase {
         XCTAssertEqual(device["id"] as? String, "device-1")
         XCTAssertEqual(device["name"] as? String, "MacBook Pro")
     }
+    func testNamespaceCreationUsesDedicatedEndpoint() throws {
+        let client = SyncClient(baseURL: URL(string: "https://ivy.example")!)
+        let request = try client.makeNamespaceCreationRequest(
+            namespace: "New Space",
+            device: SyncDevice(id: "device-1", name: "MacBook Pro")
+        )
+
+        XCTAssertEqual(request.url?.absoluteString, "https://ivy.example/api/v1/namespaces")
+        XCTAssertEqual(request.httpMethod, "POST")
+    }
+
 
     func testGoogleOAuthStartDoesNotContainNamespace() throws {
         let client = SyncClient(baseURL: URL(string: "https://ivy.example")!)
@@ -216,6 +223,87 @@ final class SyncClientTests: XCTestCase {
         XCTAssertTrue(response.attachments.isEmpty)
     }
 
+    func testUploadsAttachmentBytesDirectlyThenRegistersMetadata() async throws {
+        MockURLProtocol.reset()
+        defer { MockURLProtocol.reset() }
+        MockURLProtocol.responseProvider = { request in
+            switch request.url?.path {
+            case "/api/v1/upload/authorization":
+                return (200, Data("""
+                {
+                  "uploadURL": "https://uploader.qiansmile.com/api/upload/files",
+                  "authorization": "Uploader direct-token",
+                  "filePath": "ivy/user-1/attachments"
+                }
+                """.utf8))
+            case "/api/upload/files":
+                return (200, Data("""
+                {
+                  "urls": ["https://files.qiansmile.com/ivy/user-1/attachments/file.txt"],
+                  "uuids": ["uuid-1"]
+                }
+                """.utf8))
+            case "/api/v1/upload/files":
+                return (200, Data("""
+                {
+                  "urls": ["https://files.qiansmile.com/ivy/user-1/attachments/file.txt"],
+                  "uuids": ["uuid-1"],
+                  "attachments": [{
+                    "url": "https://files.qiansmile.com/ivy/user-1/attachments/file.txt",
+                    "thumbnailUrl": null,
+                    "name": "file.txt",
+                    "sizeBytes": 5,
+                    "contentType": "text/plain"
+                  }]
+                }
+                """.utf8))
+            default:
+                return (404, Data())
+            }
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = SyncClient(baseURL: URL(string: "https://ivy.example")!, session: session)
+
+        let response = try await client.uploadAttachments(
+            token: "jwt-token",
+            files: [AttachmentUploadFile(
+                filename: "file.txt",
+                contentType: "text/plain",
+                data: Data("hello".utf8)
+            )]
+        )
+
+        XCTAssertEqual(response.urls.first?.absoluteString, "https://files.qiansmile.com/ivy/user-1/attachments/file.txt")
+        XCTAssertEqual(response.attachments.first?.name, "file.txt")
+        XCTAssertEqual(MockURLProtocol.requests.count, 3)
+
+        let authorizationRequest = MockURLProtocol.requests[0]
+        XCTAssertEqual(authorizationRequest.url?.absoluteString, "https://ivy.example/api/v1/upload/authorization")
+        XCTAssertEqual(authorizationRequest.value(forHTTPHeaderField: "Authorization"), "Bearer jwt-token")
+
+        let uploadRequest = MockURLProtocol.requests[1]
+        XCTAssertEqual(uploadRequest.url?.host, "uploader.qiansmile.com")
+        XCTAssertEqual(uploadRequest.value(forHTTPHeaderField: "uploader-authorization"), "Uploader direct-token")
+        XCTAssertNil(uploadRequest.value(forHTTPHeaderField: "Authorization"))
+        let uploadBody = String(decoding: try XCTUnwrap(MockURLProtocol.requestBodies[1]), as: UTF8.self)
+        XCTAssertTrue(uploadBody.contains("ivy/user-1/attachments"))
+        XCTAssertTrue(uploadBody.contains("name=\"files\"; filename=\"file.txt\""))
+
+        let registrationRequest = MockURLProtocol.requests[2]
+        XCTAssertEqual(registrationRequest.url?.absoluteString, "https://ivy.example/api/v1/upload/files")
+        XCTAssertEqual(registrationRequest.value(forHTTPHeaderField: "Authorization"), "Bearer jwt-token")
+        let registration = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: try XCTUnwrap(MockURLProtocol.requestBodies[2])
+            ) as? [String: Any]
+        )
+        let registeredFiles = try XCTUnwrap(registration["files"] as? [[String: Any]])
+        XCTAssertEqual(registeredFiles.first?["uuid"] as? String, "uuid-1")
+        XCTAssertEqual(registeredFiles.first?["sizeBytes"] as? Int, 5)
+    }
+
     func testFetchesAttachmentQuotaBeforeUpload() async throws {
         MockURLProtocol.responseData = Data("""
         {
@@ -299,12 +387,52 @@ final class SyncClientTests: XCTestCase {
         XCTAssertEqual(account.methods, ["google"])
         XCTAssertNil(account.namespace)
     }
+    func testRefreshSessionSendsOpaqueTokenWithDeviceBinding() async throws {
+        MockURLProtocol.reset()
+        defer { MockURLProtocol.reset() }
+        MockURLProtocol.statusCode = 401
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = SyncClient(baseURL: URL(string: "https://ivy.example")!, session: session)
+
+        do {
+            _ = try await client.refreshSession(
+                refreshToken: "opaque-refresh-token",
+                device: SyncDevice(id: "device-1", name: "MacBook Pro")
+            )
+            XCTFail("Expected the mock rejection")
+        } catch SyncClientError.server(let statusCode, _) {
+            XCTAssertEqual(statusCode, 401)
+        }
+
+        let request = try XCTUnwrap(MockURLProtocol.requests.first)
+        XCTAssertEqual(request.url?.path, "/api/v1/auth/refresh")
+        let body = try XCTUnwrap(MockURLProtocol.requestBodies.first ?? nil)
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(payload["refreshToken"] as? String, "opaque-refresh-token")
+        let device = try XCTUnwrap(payload["device"] as? [String: Any])
+        XCTAssertEqual(device["id"] as? String, "device-1")
+    }
+
 }
 
 private final class MockURLProtocol: URLProtocol {
     static var responseData = Data()
     static var statusCode = 200
     static var lastRequest: URLRequest?
+    static var requests: [URLRequest] = []
+    static var requestBodies: [Data?] = []
+    static var responseProvider: ((URLRequest) -> (statusCode: Int, data: Data))?
+
+    static func reset() {
+        responseData = Data()
+        statusCode = 200
+        lastRequest = nil
+        requests = []
+        requestBodies = []
+        responseProvider = nil
+    }
 
     override class func canInit(with request: URLRequest) -> Bool {
         lastRequest = request
@@ -313,15 +441,35 @@ private final class MockURLProtocol: URLProtocol {
 
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
+    private static func body(from request: URLRequest) -> Data? {
+        if let body = request.httpBody { return body }
+        guard let stream = request.httpBodyStream else { return nil }
+
+        stream.open()
+        defer { stream.close() }
+        var body = Data()
+        var buffer = [UInt8](repeating: 0, count: 16_384)
+        while stream.hasBytesAvailable {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            if count <= 0 { break }
+            body.append(buffer, count: count)
+        }
+        return body
+    }
+
     override func startLoading() {
+        Self.requests.append(request)
+        Self.requestBodies.append(Self.body(from: request))
+        let result = Self.responseProvider?(request)
+            ?? (statusCode: Self.statusCode, data: Self.responseData)
         let response = HTTPURLResponse(
             url: request.url ?? URL(string: "https://example.invalid")!,
-            statusCode: Self.statusCode,
+            statusCode: result.statusCode,
             httpVersion: nil,
             headerFields: nil
         )!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Self.responseData)
+        client?.urlProtocol(self, didLoad: result.data)
         client?.urlProtocolDidFinishLoading(self)
     }
 

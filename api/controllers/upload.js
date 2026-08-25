@@ -1,4 +1,3 @@
-import multer from 'multer';
 import Attachment from '../models/attachment.model.js';
 import { apiError, requireString } from '../middleware/validate.js';
 import {
@@ -7,107 +6,78 @@ import {
   releaseAttachmentQuota,
   reserveAttachmentQuota,
 } from '../services/quota.js';
-import { uploadFilesToLatte } from '../services/uploader.js';
-import { createThumbnail, isThumbnailableImage, thumbnailFilename } from '../services/thumbnails.js';
+import { getDirectUploadAuthorization } from '../services/uploader.js';
 
-const storage = multer.memoryStorage();
+const FILES_ORIGIN = 'https://files.qiansmile.com';
 
-export const uploadFilesMiddleware = multer({
-  storage,
-  limits: { files: 10, fileSize: ATTACHMENT_LIMIT_BYTES },
-}).array('files', 10);
+const attachmentPath = (user) => `ivy/${user._id.toString()}/attachments`;
 
-const fileBytes = (file) => Number(file.size || file.buffer?.length || 0);
+const registeredFile = (value, index, filePath) => {
+  if (!value || typeof value !== 'object') {
+    throw apiError(422, 'FILE_INVALID', `files[${index}] is invalid.`);
+  }
 
-/**
- * Builds one thumbnail buffer per image file (same index as `files`).
- * Non-images and undecodable images produce null: they upload unchanged
- * and clients render them as plain file rows.
- */
-const buildThumbnails = (files) =>
-  Promise.all(files.map(async (file) => {
-    if (!isThumbnailableImage(file.mimetype)) return null;
-    try {
-      return await createThumbnail(file.buffer);
-    } catch {
-      return null;
-    }
-  }));
+  const url = requireString(value.url, `files[${index}].url`);
+  let parsedURL;
+  try {
+    parsedURL = new URL(url);
+  } catch {
+    throw apiError(422, 'FILE_URL_INVALID', `files[${index}].url is invalid.`);
+  }
+  if (parsedURL.origin !== FILES_ORIGIN || !parsedURL.pathname.startsWith(`/${filePath}/`)) {
+    throw apiError(422, 'FILE_URL_INVALID', `files[${index}].url is outside this account's upload path.`);
+  }
+
+  const sizeBytes = Number(value.sizeBytes);
+  if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 0 || sizeBytes > ATTACHMENT_LIMIT_BYTES) {
+    throw apiError(422, 'ATTACHMENT_SIZE_INVALID', `files[${index}].sizeBytes is invalid.`);
+  }
+
+  return {
+    url,
+    uuid: requireString(value.uuid, `files[${index}].uuid`),
+    name: requireString(value.name, `files[${index}].name`).slice(0, 500),
+    sizeBytes,
+    contentType: requireString(value.contentType, `files[${index}].contentType`).slice(0, 200),
+  };
+};
+
+export const uploadAuthorization = async (req, res) => {
+  res.json(await getDirectUploadAuthorization(attachmentPath(req.user)));
+};
 
 export const uploadFiles = async (req, res) => {
-  const files = Array.isArray(req.files) ? req.files : [];
-  if (files.length === 0) {
+  const values = Array.isArray(req.body?.files) ? req.body.files : [];
+  if (values.length === 0) {
     throw apiError(422, 'FILES_REQUIRED', 'files is required.');
   }
-  if (files.length > 10) {
-    throw apiError(422, 'FILES_TOO_MANY', 'At most 10 files may be uploaded.');
+  if (values.length > 10) {
+    throw apiError(422, 'FILES_TOO_MANY', 'At most 10 files may be registered.');
   }
 
-  const thumbnails = await buildThumbnails(files);
-
-  // Thumbnails count against the same quota, so reserve originals and
-  // thumbnails in one atomic step before anything reaches the uploader.
-  const originalBytes = files.reduce((sum, file) => sum + fileBytes(file), 0);
-  const thumbnailBytes = thumbnails.reduce((sum, buffer) => sum + (buffer ? buffer.length : 0), 0);
-  const totalBytes = originalBytes + thumbnailBytes;
+  const filePath = attachmentPath(req.user);
+  const files = values.map((value, index) => registeredFile(value, index, filePath));
+  const totalBytes = files.reduce((sum, file) => sum + file.sizeBytes, 0);
   await reserveAttachmentQuota(req.user, totalBytes);
   try {
-    const basePath = `ivy/${req.user._id.toString()}/attachments`;
-    const result = await uploadFilesToLatte(files, { filePath: basePath });
-
-    if (result.urls.length !== files.length) {
-      throw apiError(502, 'UPLOADER_BAD_RESPONSE', 'Uploader returned an incomplete attachment list.');
-    }
-
-    const thumbnailFiles = [];
-    const thumbnailFileIndexes = [];
-    thumbnails.forEach((buffer, index) => {
-      if (!buffer) return;
-      thumbnailFileIndexes.push(index);
-      thumbnailFiles.push({
-        buffer,
-        size: buffer.length,
-        mimetype: 'image/webp',
-        originalname: thumbnailFilename(files[index].originalname),
-      });
-    });
-
-    const thumbnailUrls = new Array(files.length).fill(null);
-    const thumbnailUuids = new Array(files.length).fill(null);
-    if (thumbnailFiles.length > 0) {
-      const thumbnailResult = await uploadFilesToLatte(thumbnailFiles, {
-        filePath: `${basePath}/thumbnails`,
-      });
-      if (thumbnailResult.urls.length !== thumbnailFiles.length) {
-        throw apiError(502, 'UPLOADER_BAD_RESPONSE', 'Uploader returned an incomplete thumbnail list.');
-      }
-      thumbnailFileIndexes.forEach((fileIndex, position) => {
-        thumbnailUrls[fileIndex] = thumbnailResult.urls[position];
-        thumbnailUuids[fileIndex] = thumbnailResult.uuids[position] || null;
-      });
-    }
-
-    await Attachment.insertMany(files.map((file, index) => ({
+    await Attachment.insertMany(files.map((file) => ({
       userId: req.user._id,
-      url: result.urls[index],
-      uploaderUuid: result.uuids[index] || null,
-      thumbnailUrl: thumbnailUrls[index],
-      thumbnailUuid: thumbnailUuids[index],
-      thumbnailBytes: thumbnails[index] ? thumbnails[index].length : 0,
-      sizeBytes: fileBytes(file),
-      contentType: file.mimetype || 'application/octet-stream',
-      originalName: file.originalname || 'file',
+      url: file.url,
+      uploaderUuid: file.uuid,
+      sizeBytes: file.sizeBytes,
+      contentType: file.contentType,
+      originalName: file.name,
     })));
 
     res.json({
-      urls: result.urls,
-      uuids: result.uuids,
-      attachments: files.map((file, index) => ({
-        url: result.urls[index],
-        thumbnailUrl: thumbnailUrls[index],
-        name: file.originalname || 'file',
-        sizeBytes: fileBytes(file),
-        contentType: file.mimetype || 'application/octet-stream',
+      urls: files.map((file) => file.url),
+      uuids: files.map((file) => file.uuid),
+      attachments: files.map((file) => ({
+        url: file.url,
+        thumbnailUrl: null,
+        name: file.name,
+        sizeBytes: file.sizeBytes,
+        contentType: file.contentType,
       })),
     });
   } catch (error) {

@@ -2,10 +2,9 @@ FROM node:22-slim
 
 WORKDIR /app
 
-COPY package.json ./
-# This skeleton intentionally has no lockfile yet; after the first install creates one,
-# switch this layer to `npm ci --omit=dev` for reproducible production builds.
-RUN npm install --omit=dev
+COPY package.json pnpm-lock.yaml ./
+RUN corepack enable \
+    && pnpm install --frozen-lockfile --prod
 
 COPY . .
 

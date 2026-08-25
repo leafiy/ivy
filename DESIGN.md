@@ -64,4 +64,4 @@ This mapping is shared by note backgrounds, palette swatches, and selected/accen
 - Unpinned notes use normal window ordering and are brought forward/key when created, reopened, or shown through “Show All Notes.”
 - Pinned notes use floating ordering.
 - Closing hides without deleting. Deleting always requires confirmation.
-- Position, size, pin state, pinned opacity, closed state, color, and global-collapse state persist according to their existing storage contracts.
+- Position, size, pinned opacity, closed state, and global-collapse state persist locally. Color and pin state persist in the note database and sync across devices.

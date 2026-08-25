@@ -23,6 +23,7 @@ test('authentication surface excludes Apple login', async (t) => {
   assert.equal(providers.email.enabled, true);
 
   for (const path of [
+    '/api/v1/auth/login',
     '/api/v1/auth/oauth/apple/start',
     '/api/v1/auth/oauth/apple/callback',
   ]) {
