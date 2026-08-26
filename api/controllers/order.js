@@ -5,7 +5,6 @@ import { apiError, requireString } from '../middleware/validate.js';
 const serializePlan = (plan) => ({
   planId: plan.planId,
   name: plan.name,
-  deviceLimit: plan.deviceLimit,
   storageLimitMB: plan.storageLimitMB,
   price: plan.price || {},
   durationDays: plan.durationDays ?? null,

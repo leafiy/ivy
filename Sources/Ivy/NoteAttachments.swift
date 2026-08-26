@@ -41,39 +41,85 @@ struct PendingNoteAttachment {
         )
     }
 
-    /// Wraps raw image bytes from the pasteboard (a copied screenshot or an
-    /// image copied out of another app) as a PNG upload.
+    /// Wraps pasteboard bytes as an upload, so a pasted picture or file
+    /// travels the same route a dropped one does. Concrete image flavors keep
+    /// their original bytes and type; anything else the pasteboard carries as
+    /// a file's data (a PDF, an archive) uploads as an ordinary file. Only
+    /// pasteboards that carry text are refused, leaving ordinary copy/paste
+    /// to the editor.
     init?(pasteboard: NSPasteboard) {
-        if let png = pasteboard.data(forType: .png) {
-            self.init(
-                filename: Self.generatedImageName(fileExtension: "png"),
-                contentType: "image/png",
-                data: png
+        guard let attachment = Self.imageAttachment(pasteboard: pasteboard)
+            ?? Self.fileAttachment(pasteboard: pasteboard)
+        else { return nil }
+        self = attachment
+    }
+
+    /// Image flavors whose bytes upload verbatim, best first. TIFF is absent
+    /// on purpose: it is the screenshot flavor, and its uncompressed bytes
+    /// would eat the account's attachment quota.
+    private static let losslessImageFlavors: [(type: NSPasteboard.PasteboardType, contentType: String, fileExtension: String)] = [
+        (.png, "image/png", "png"),
+        (NSPasteboard.PasteboardType(UTType.jpeg.identifier), "image/jpeg", "jpg"),
+        (NSPasteboard.PasteboardType(UTType.gif.identifier), "image/gif", "gif"),
+        (NSPasteboard.PasteboardType(UTType.heic.identifier), "image/heic", "heic"),
+        (NSPasteboard.PasteboardType(UTType.webP.identifier), "image/webp", "webp"),
+    ]
+
+    private static func imageAttachment(pasteboard: NSPasteboard) -> PendingNoteAttachment? {
+        for flavor in losslessImageFlavors {
+            guard let data = pasteboard.data(forType: flavor.type), !data.isEmpty else { continue }
+            return PendingNoteAttachment(
+                filename: generatedImageName(fileExtension: flavor.fileExtension),
+                contentType: flavor.contentType,
+                data: data
             )
-            return
         }
-        if let tiff = pasteboard.data(forType: .tiff),
-           let representation = NSBitmapImageRep(data: tiff),
-           let png = representation.representation(using: .png, properties: [:]) {
-            self.init(
-                filename: Self.generatedImageName(fileExtension: "png"),
-                contentType: "image/png",
-                data: png
-            )
-            return
-        }
-        // Any remaining image flavor (JPEG dragged out of a browser, etc.).
+
+        // A copied screenshot and every other flavor AppKit can decode becomes
+        // PNG. Text pasteboards are excluded first: rich text from a word
+        // processor also carries a PDF rendering, and pasting it must stay
+        // text.
         guard
+            !carriesText(pasteboard),
             let image = NSImage(pasteboard: pasteboard),
             let tiff = image.tiffRepresentation,
             let representation = NSBitmapImageRep(data: tiff),
             let png = representation.representation(using: .png, properties: [:])
         else { return nil }
-        self.init(
-            filename: Self.generatedImageName(fileExtension: "png"),
+        return PendingNoteAttachment(
+            filename: generatedImageName(fileExtension: "png"),
             contentType: "image/png",
             data: png
         )
+    }
+
+    /// Any remaining pasteboard that holds one file's bytes and no text at
+    /// all — a PDF page, an archive, a document dragged out of an app that
+    /// never wrote it to disk.
+    private static func fileAttachment(pasteboard: NSPasteboard) -> PendingNoteAttachment? {
+        guard !carriesText(pasteboard) else { return nil }
+        for pasteboardType in pasteboard.types ?? [] {
+            guard
+                let type = UTType(pasteboardType.rawValue),
+                type.conforms(to: .data),
+                !type.conforms(to: .text),
+                !type.conforms(to: .url),
+                let data = pasteboard.data(forType: pasteboardType),
+                !data.isEmpty
+            else { continue }
+            return PendingNoteAttachment(
+                filename: generatedFileName(
+                    fileExtension: type.preferredFilenameExtension ?? "dat"
+                ),
+                contentType: type.preferredMIMEType ?? "application/octet-stream",
+                data: data
+            )
+        }
+        return nil
+    }
+
+    private static func carriesText(_ pasteboard: NSPasteboard) -> Bool {
+        pasteboard.availableType(from: [.string, .rtf, .rtfd, .html]) != nil
     }
 
     var uploadFile: AttachmentUploadFile {
@@ -81,10 +127,24 @@ struct PendingNoteAttachment {
     }
 
     static func generatedImageName(fileExtension: String, now: Date = Date()) -> String {
+        generatedName(prefix: "Image", fileExtension: fileExtension, now: now)
+    }
+
+    static func generatedFileName(fileExtension: String, now: Date = Date()) -> String {
+        generatedName(prefix: "File", fileExtension: fileExtension, now: now)
+    }
+
+    /// Pasteboard bytes arrive nameless; the timestamp keeps one note's
+    /// pasted files apart from each other.
+    private static func generatedName(
+        prefix: String,
+        fileExtension: String,
+        now: Date
+    ) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyyMMdd-HHmmss"
-        return "Image-\(formatter.string(from: now)).\(fileExtension)"
+        return "\(prefix)-\(formatter.string(from: now)).\(fileExtension)"
     }
 }
 

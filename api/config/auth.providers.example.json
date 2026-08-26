@@ -19,6 +19,10 @@
       "development": "http://localhost:7788/api/v1/auth/oauth/google/callback",
       "production": "https://example.com/api/v1/auth/oauth/google/callback"
     },
-    "appCallbackURL": "ivy://oauth/google"
+    "appCallbackURL": "ivy://oauth/google",
+    "webCallbackURLs": {
+      "development": "http://localhost:5173/auth/google",
+      "production": "https://ivy.leafiy.com/auth/google"
+    }
   }
 }

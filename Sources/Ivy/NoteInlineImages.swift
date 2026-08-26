@@ -63,7 +63,6 @@ final class NoteInlineImageAttachment: NSTextAttachment {
     init(
         markerURL: String,
         markerName: String,
-        displayURL: String,
         layoutMetrics: NoteInlineImageLayoutMetrics?
     ) {
         self.markerURL = markerURL
@@ -71,7 +70,7 @@ final class NoteInlineImageAttachment: NSTextAttachment {
         super.init(data: nil, ofType: nil)
         attachmentCell = NoteInlineImageCell(
             markerURL: markerURL,
-            displayURL: displayURL,
+            markerName: markerName,
             layoutMetrics: layoutMetrics
         )
     }
@@ -83,22 +82,47 @@ final class NoteInlineImageAttachment: NSTextAttachment {
 
 /// TextKit cell that draws the image scaled to the editor's wrap width,
 /// capped at 600pt, keeping its aspect ratio. Until bytes arrive it draws a
-/// quiet rounded placeholder of fixed height.
+/// quiet rounded placeholder of fixed height. Clicking the picture reveals its
+/// download and delete controls in the top-right corner.
 final class NoteInlineImageCell: NSTextAttachmentCell {
     private enum Metrics {
         static let maxWidth: CGFloat = 600
         static let minWidth: CGFloat = 40
         static let placeholderHeight: CGFloat = 96
         static let cornerRadius: CGFloat = 8
+        static let controlDiameter: CGFloat = 24
+        static let controlInset: CGFloat = 8
+        static let controlGap: CGFloat = 6
+        static let controlIconSize: CGFloat = 12
+    }
+
+    /// The two controls a picture offers, right to left from its corner.
+    private enum Control {
+        case delete
+        case download
+
+        var icon: IvyIcon {
+            switch self {
+            case .delete: return .trash
+            case .download: return .download
+            }
+        }
     }
 
     private let markerURL: String
-    private let displayURL: String
+    private let markerName: String
     private let layoutMetrics: NoteInlineImageLayoutMetrics?
 
-    init(markerURL: String, displayURL: String, layoutMetrics: NoteInlineImageLayoutMetrics?) {
+    /// Set by the editor while this picture is the one the user tapped.
+    var isShowingControls = false
+
+    init(
+        markerURL: String,
+        markerName: String,
+        layoutMetrics: NoteInlineImageLayoutMetrics?
+    ) {
         self.markerURL = markerURL
-        self.displayURL = displayURL
+        self.markerName = markerName
         self.layoutMetrics = layoutMetrics
         super.init(textCell: "")
     }
@@ -109,8 +133,14 @@ final class NoteInlineImageCell: NSTextAttachmentCell {
 
     private var resolvedImage: NSImage? {
         MainActor.assumeIsolated {
-            NoteInlineImageStore.shared.image(for: markerURL, fetchingFrom: displayURL)
+            NoteInlineImageStore.shared.image(for: markerURL, fetchingFrom: markerURL)
         }
+    }
+
+    /// An image still uploading has no server URL to save from; it can only
+    /// be deleted.
+    private var isDownloadable: Bool {
+        !markerURL.hasPrefix("\(NoteInlineImage.pendingScheme)://")
     }
 
     /// CSS-like `max-width`: never wider than 600pt, the editor's wrap
@@ -188,7 +218,82 @@ final class NoteInlineImageCell: NSTextAttachmentCell {
                 hints: nil
             )
         }
+
+        if isShowingControls {
+            for placed in controls(in: cellFrame) {
+                drawControl(placed.control, in: placed.rect)
+            }
+        }
         NSGraphicsContext.restoreGraphicsState()
+    }
+
+    /// Controls sit in the picture's top-right corner, delete outermost. A
+    /// picture too small to seat them keeps its own surface: backspace
+    /// remains the way to remove it.
+    private func controls(in cellFrame: NSRect) -> [(control: Control, rect: NSRect)] {
+        let diameter = Metrics.controlDiameter
+        let span = diameter + Metrics.controlInset * 2
+        guard cellFrame.width >= span, cellFrame.height >= span else { return [] }
+
+        // A flipped text view puts the picture's top edge at minY.
+        let y = cellFrame.minY + Metrics.controlInset
+        var x = cellFrame.maxX - Metrics.controlInset - diameter
+        var placed: [(control: Control, rect: NSRect)] = [
+            (.delete, NSRect(x: x, y: y, width: diameter, height: diameter))
+        ]
+        x -= diameter + Metrics.controlGap
+        if isDownloadable, x >= cellFrame.minX + Metrics.controlInset {
+            placed.append((.download, NSRect(x: x, y: y, width: diameter, height: diameter)))
+        }
+        return placed
+    }
+
+    private func drawControl(_ control: Control, in rect: NSRect) {
+        NSColor.white.withAlphaComponent(0.92).setFill()
+        NSBezierPath(ovalIn: rect).fill()
+        NSColor.black.withAlphaComponent(0.12).setStroke()
+        NSBezierPath(ovalIn: rect.insetBy(dx: 0.5, dy: 0.5)).stroke()
+
+        let icon = control.icon.nsImage(size: Metrics.controlIconSize)
+        let size = icon.size
+        icon.draw(
+            in: NSRect(
+                origin: NSPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2),
+                size: size
+            ),
+            from: .zero,
+            operation: .sourceOver,
+            fraction: 0.72,
+            respectFlipped: true,
+            hints: nil
+        )
+    }
+
+    override func wantsToTrackMouse() -> Bool { true }
+
+    override func trackMouse(
+        with theEvent: NSEvent,
+        in cellFrame: NSRect,
+        of controlView: NSView?,
+        atCharacterIndex charIndex: Int,
+        untilMouseUp flag: Bool
+    ) -> Bool {
+        guard let view = controlView as? NoteRichTextView else { return false }
+        MainActor.assumeIsolated {
+            let point = view.convert(theEvent.locationInWindow, from: nil)
+            if isShowingControls,
+               let hit = controls(in: cellFrame).first(where: { $0.rect.contains(point) }) {
+                switch hit.control {
+                case .download:
+                    view.downloadInlineImage(url: markerURL, name: markerName)
+                case .delete:
+                    view.removeInlineImage(at: charIndex)
+                }
+                return
+            }
+            view.activateImageControls(self, at: charIndex)
+        }
+        return true
     }
 }
 
@@ -204,7 +309,6 @@ enum NoteRichTextFormat {
     static func attributedString(
         from text: String,
         attributes: [NSAttributedString.Key: Any],
-        displayURLProvider: (String) -> String,
         layoutMetrics: NoteInlineImageLayoutMetrics?
     ) -> NSAttributedString {
         let result = NSMutableAttributedString()
@@ -229,7 +333,6 @@ enum NoteRichTextFormat {
                 String(content),
                 to: result,
                 attributes: attributes,
-                displayURLProvider: displayURLProvider,
                 layoutMetrics: layoutMetrics
             )
             if todo?.isChecked == true, result.length > contentStart {
@@ -309,7 +412,6 @@ enum NoteRichTextFormat {
         _ text: String,
         to result: NSMutableAttributedString,
         attributes: [NSAttributedString.Key: Any],
-        displayURLProvider: (String) -> String,
         layoutMetrics: NoteInlineImageLayoutMetrics?
     ) {
         var cursor = text.startIndex
@@ -324,7 +426,6 @@ enum NoteRichTextFormat {
             let attachment = NoteInlineImageAttachment(
                 markerURL: marker.url,
                 markerName: marker.name,
-                displayURL: displayURLProvider(marker.url),
                 layoutMetrics: layoutMetrics
             )
             let piece = NSMutableAttributedString(attachment: attachment)

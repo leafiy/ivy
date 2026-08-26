@@ -169,7 +169,6 @@ final class SyncClientTests: XCTestCase {
     func testQuotaDecodingUsesSeparateNoteAndAttachmentLimits() throws {
         let data = Data("""
         {
-          "deviceLimit": 2,
           "storageLimitMB": 10,
           "noteDatabaseLimitMB": 10,
           "attachmentLimitMB": 50
@@ -190,7 +189,6 @@ final class SyncClientTests: XCTestCase {
           "attachments": [
             {
               "url": "https://oss.example/ivy/u1/attachments/photo.jpg",
-              "thumbnailUrl": "https://oss.example/ivy/u1/attachments/thumbnails/photo.thumb.webp",
               "name": "photo.jpg",
               "sizeBytes": 120000,
               "contentType": "image/jpeg"
@@ -204,7 +202,6 @@ final class SyncClientTests: XCTestCase {
         XCTAssertEqual(response.urls.count, 1)
         XCTAssertEqual(response.attachments.count, 1)
         let attachment = try XCTUnwrap(response.attachments.first)
-        XCTAssertEqual(attachment.thumbnailURL, "https://oss.example/ivy/u1/attachments/thumbnails/photo.thumb.webp")
         XCTAssertEqual(attachment.sizeBytes, 120_000)
         XCTAssertTrue(attachment.isImage)
     }
@@ -250,7 +247,6 @@ final class SyncClientTests: XCTestCase {
                   "uuids": ["uuid-1"],
                   "attachments": [{
                     "url": "https://files.qiansmile.com/ivy/user-1/attachments/file.txt",
-                    "thumbnailUrl": null,
                     "name": "file.txt",
                     "sizeBytes": 5,
                     "contentType": "text/plain"
@@ -359,8 +355,7 @@ final class SyncClientTests: XCTestCase {
           "methods": ["google"],
           "subscription": { "planId": "free", "expiresAt": null },
           "quota": {
-            "deviceLimit": 2,
-            "storageLimitMB": 10,
+              "storageLimitMB": 10,
             "noteDatabaseLimitMB": 10,
             "attachmentLimitMB": 50
           },

@@ -275,7 +275,6 @@ final class NoteStoreTests: XCTestCase {
 
         let image = NoteAttachment(
             url: "https://oss.example/ivy/u1/attachments/photo.jpg",
-            thumbnailURL: "https://oss.example/ivy/u1/attachments/thumbnails/photo.thumb.webp",
             name: "photo.jpg",
             sizeBytes: 120_000,
             contentType: "image/jpeg"
@@ -292,8 +291,8 @@ final class NoteStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.attachments, [image, file])
         XCTAssertTrue(reloaded.attachments[0].isImage)
         XCTAssertFalse(reloaded.attachments[1].isImage)
-        XCTAssertEqual(reloaded.attachments[0].displayImageURL, image.thumbnailURL)
-        XCTAssertEqual(reloaded.attachments[1].displayImageURL, file.url)
+        XCTAssertEqual(reloaded.attachments[0].url, image.url)
+        XCTAssertEqual(reloaded.attachments[1].url, file.url)
 
         let removed = try XCTUnwrap(
             try source.store.update(id: note.id, text: reloaded.text, attachments: [image])

@@ -123,21 +123,18 @@ public struct UserSubscription: Codable, Equatable, Sendable {
 }
 
 public struct UserQuota: Codable, Equatable, Sendable {
-    public var deviceLimit: Int
     public var storageLimitMB: Double
     public var noteDatabaseLimitMB: Double
     public var attachmentLimitMB: Double
 
     private enum CodingKeys: String, CodingKey {
-        case deviceLimit, storageLimitMB, noteDatabaseLimitMB, attachmentLimitMB
+        case storageLimitMB, noteDatabaseLimitMB, attachmentLimitMB
     }
 
     public init(
-        deviceLimit: Int,
         noteDatabaseLimitMB: Double = 10,
         attachmentLimitMB: Double = 50
     ) {
-        self.deviceLimit = deviceLimit
         self.storageLimitMB = noteDatabaseLimitMB
         self.noteDatabaseLimitMB = noteDatabaseLimitMB
         self.attachmentLimitMB = attachmentLimitMB
@@ -145,7 +142,6 @@ public struct UserQuota: Codable, Equatable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        deviceLimit = try container.decode(Int.self, forKey: .deviceLimit)
         storageLimitMB = try container.decodeIfPresent(Double.self, forKey: .storageLimitMB) ?? 10
         noteDatabaseLimitMB = try container.decodeIfPresent(Double.self, forKey: .noteDatabaseLimitMB)
             ?? storageLimitMB
@@ -254,7 +250,7 @@ private struct AttachmentRegistrationRequest: Encodable {
 public struct AttachmentUploadResponse: Codable, Equatable, Sendable {
     public var urls: [URL]
     public var uuids: [String]
-    /// Per-file metadata (OSS URL, thumbnail, name, size). Empty when talking
+    /// Per-file metadata (OSS URL, name, size). Empty when talking
     /// to an API predating attachment metadata; callers then fall back to `urls`.
     public var attachments: [NoteAttachment]
 
@@ -294,7 +290,20 @@ public struct AttachmentDeleteResponse: Codable, Equatable, Sendable {
 }
 
 public final class SyncClient: @unchecked Sendable {
-    public static let apiBaseURL = URL(string: "https://ivy-api.leafiy.com")!
+    /// Production, unless a debug build says otherwise: `IVY_API_BASE_URL`
+    /// points the app at the local stack in docker-compose.dev.yml, so the Mac
+    /// and the web client can be watched syncing against the same throwaway
+    /// database. A release build never reads it, so a shipped app can only
+    /// ever reach production.
+    public static let apiBaseURL: URL = {
+        #if DEBUG
+        if let raw = ProcessInfo.processInfo.environment["IVY_API_BASE_URL"],
+           let override = URL(string: raw) {
+            return override
+        }
+        #endif
+        return URL(string: "https://ivy-api.leafiy.com")!
+    }()
 
     private let baseURL: URL
     private let session: URLSession

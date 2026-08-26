@@ -7,6 +7,8 @@ import { asyncHandler } from './middleware/validate.js';
 import { createRateLimiter, requestIp } from './services/rateLimit.js';
 import * as authController from './controllers/auth.js';
 import * as syncController from './controllers/sync.js';
+import * as notesController from './controllers/notes.js';
+import * as eventsController from './controllers/events.js';
 import * as uploadController from './controllers/upload.js';
 import * as orderController from './controllers/order.js';
 import * as adminController from './controllers/admin.js';
@@ -115,6 +117,21 @@ router.post(
   syncController.uploadDatabaseMiddleware,
   asyncHandler(syncController.uploadDatabase)
 );
+// The browser client speaks notes, not snapshots. Everything under here runs
+// through the same bridge the macOS upload path feeds, so the two clients can
+// never disagree about what the account holds.
+// Deliberately outside syncLimit: a stream is one request that then lives for
+// minutes, and counting it against a per-minute budget would punish exactly
+// the clients behaving best.
+router.get(`${apiPrefix}/sync/events`, authenticateClient, asyncHandler(eventsController.streamNoteEvents));
+
+router.get(`${apiPrefix}/notes`, authenticateClient, syncLimit, asyncHandler(notesController.listNotes));
+router.post(`${apiPrefix}/notes`, authenticateClient, syncLimit, asyncHandler(notesController.createNote));
+router.post(`${apiPrefix}/notes/flush`, authenticateClient, syncLimit, asyncHandler(notesController.flushNoteDatabase));
+router.patch(`${apiPrefix}/notes/:id`, authenticateClient, syncLimit, asyncHandler(notesController.updateNote));
+router.delete(`${apiPrefix}/notes/:id`, authenticateClient, syncLimit, asyncHandler(notesController.deleteNote));
+router.post(`${apiPrefix}/notes/:id/restore`, authenticateClient, syncLimit, asyncHandler(notesController.restoreNote));
+
 router.get(
   `${apiPrefix}/upload/authorization`,
   authenticateClient,

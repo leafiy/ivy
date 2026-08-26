@@ -24,6 +24,10 @@ API_PORT="7788"
 UPLOADER_BASE_URL="https://uploader.qiansmile.com/api"
 CADDY_SOURCE="$SCRIPT_DIR/deploy/ivy.caddy"
 CADDY_TARGET="/etc/caddy/sites/ivy.caddy"
+# The API release lives under /root and is mode 0700. Caddy does not run as
+# root, so the static client gets its own world-readable tree instead of being
+# served out of there.
+WEB_ROOT="${WEB_ROOT:-/srv/ivy-web}"
 AUTH_CONFIG="$SCRIPT_DIR/config/auth.providers.json"
 
 SSH=(
@@ -66,7 +70,7 @@ Usage:
 Deploys a fresh Ivy MongoDB and the Express API to the same server as
 leafiy.com:
   - https://$API_DOMAIN -> Ivy API on 127.0.0.1:$API_PORT
-  - https://$SITE_DOMAIN -> reserved for the future Ivy web client
+  - https://$SITE_DOMAIN -> the Ivy web client, served from the release's web/dist
 
 The deployment commits and pushes the current branch, uploads that exact
 revision, builds the API image on the production host, installs the Caddy sites,
@@ -83,7 +87,7 @@ EOF
 }
 
 validate_inputs() {
-  for command in curl git jq scp ssh tar; do
+  for command in curl git jq pnpm scp ssh tar; do
     command -v "$command" >/dev/null || fail "$command is required"
   done
   [ -n "$DEPLOY_BRANCH" ] || fail "deployment requires a named Git branch"
@@ -152,25 +156,49 @@ commit_and_push_source() {
   ok "source pushed at $commit"
 }
 
+build_web() {
+  info "Build the web client"
+  # Built here, not on the server: the production host runs the API in a
+  # container and has no Node toolchain of its own. dist/ is gitignored, so it
+  # travels as its own tarball rather than inside the source archive.
+  command -v pnpm >/dev/null || fail "pnpm is required to build the web client"
+  ( cd "$SCRIPT_DIR/../web" && pnpm install --frozen-lockfile && pnpm build )
+  [ -f "$SCRIPT_DIR/../web/dist/index.html" ] || fail "web build produced no dist/index.html"
+  ok "web client built"
+}
+
 stage_release() {
   info "Upload immutable release $release_id"
   temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/ivy-deploy.XXXXXX")"
   git archive --format=tar --output="$temporary_directory/source.tar" HEAD
+  tar -cf "$temporary_directory/web-dist.tar" -C "$SCRIPT_DIR/../web/dist" .
 
   "${SSH[@]}" install -d -m 0700 "$remote_release"
   "${SCP[@]}" \
     "$temporary_directory/source.tar" \
+    "$temporary_directory/web-dist.tar" \
     "$DEPLOY_USER@$DEPLOY_HOST:$remote_release/"
 
-  "${SSH[@]}" bash -s -- "$REMOTE_BASE" "$remote_release" <<'REMOTE'
+  "${SSH[@]}" bash -s -- "$REMOTE_BASE" "$remote_release" "$WEB_ROOT" "$release_id" <<'REMOTE'
 set -Eeuo pipefail
 remote_base="$1"
 remote_release="$2"
+web_root="$3"
+release_id="$4"
 
 mkdir -p "$remote_base/releases" "$remote_base/secrets"
 tar -xf "$remote_release/source.tar" -C "$remote_release"
 install -m 0600 "$remote_release/api/config/auth.providers.json" "$remote_base/secrets/auth.providers.json"
-rm -f "$remote_release/api/config/auth.providers.json" "$remote_release/source.tar"
+
+# The static client goes somewhere Caddy can actually reach. It carries no
+# secrets — it is the bundle every visitor downloads — so world-readable is
+# exactly right.
+install -d -m 0755 "$web_root/releases/$release_id"
+tar -xf "$remote_release/web-dist.tar" -C "$web_root/releases/$release_id"
+chmod -R a+rX "$web_root/releases/$release_id"
+[ -f "$web_root/releases/$release_id/index.html" ]
+
+rm -f "$remote_release/api/config/auth.providers.json" "$remote_release/source.tar" "$remote_release/web-dist.tar"
 REMOTE
   ok "release uploaded without leaving credential archives"
 }
@@ -285,12 +313,19 @@ REMOTE
 activate_release() {
   info "Activate Caddy sites"
   "${SSH[@]}" bash -s -- \
-    "$REMOTE_BASE" "$remote_release" "$CADDY_TARGET" "$KEEP_RELEASES" <<'REMOTE'
+    "$REMOTE_BASE" "$remote_release" "$CADDY_TARGET" "$KEEP_RELEASES" "$WEB_ROOT" "$release_id" <<'REMOTE'
 set -Eeuo pipefail
 remote_base="$1"
 remote_release="$2"
 caddy_target="$3"
 keep_releases="$4"
+web_root="$5"
+release_id="$6"
+
+# Point the web symlink at this release before Caddy is reloaded, so the
+# reload never lands on a root that is not there yet.
+ln -sfn "$web_root/releases/$release_id" "$web_root/current.next"
+mv -Tf "$web_root/current.next" "$web_root/current"
 current_link="$remote_base/current"
 previous_release="$(readlink -f "$current_link" 2>/dev/null || true)"
 config_backup="$(mktemp /tmp/ivy.caddy.backup.XXXXXX)"
@@ -330,6 +365,13 @@ mapfile -t releases < <(printf '%s\n' "$remote_base"/releases/* | sort -r)
 for ((index = keep_releases; index < ${#releases[@]}; index += 1)); do
   [ "${releases[$index]}" = "$previous_release" ] || rm -rf "${releases[$index]}"
 done
+
+# Same retention for the client bundles, minus whatever `current` points at.
+mapfile -t web_releases < <(find "$web_root/releases" -mindepth 1 -maxdepth 1 -type d | sort -r)
+live_web="$(readlink -f "$web_root/current" 2>/dev/null || true)"
+for ((index = keep_releases; index < ${#web_releases[@]}; index += 1)); do
+  [ "${web_releases[$index]}" = "$live_web" ] || rm -rf "${web_releases[$index]}"
+done
 REMOTE
   ok "Caddy serves $SITE_DOMAIN and $API_DOMAIN"
 }
@@ -342,10 +384,18 @@ smoke_test() {
   printf '%s' "$provider_config" | \
     jq -e '.passwordless.enabled and .email.enabled and .google.enabled' >/dev/null
 
-  site_status="$(curl --retry 8 --retry-delay 2 --retry-connrefused \
-    -sS -o /dev/null -w '%{http_code}' "https://$SITE_DOMAIN/")"
-  [ "$site_status" = "404" ] || fail "reserved web domain returned HTTP $site_status instead of 404"
-  ok "HTTPS, auth providers, and reserved web domain are healthy"
+  site_body="$(curl --retry 8 --retry-delay 2 --retry-connrefused -fsS "https://$SITE_DOMAIN/")"
+  printf '%s' "$site_body" | grep -q '<div id="root">' \
+    || fail "$SITE_DOMAIN did not serve the web client"
+
+  # A deep link has to reach the app, not a 404: the client owns its routing.
+  site_status="$(curl --retry 4 --retry-delay 2 -sS -o /dev/null -w '%{http_code}' "https://$SITE_DOMAIN/app")"
+  [ "$site_status" = "200" ] || fail "deep link /app returned HTTP $site_status instead of 200"
+
+  # The admin is local-only and must not be reachable from the public site.
+  admin_status="$(curl -sS -o /dev/null -w '%{http_code}' "https://$SITE_DOMAIN/admin-api/v1/login" || true)"
+  [ "$admin_status" != "200" ] || fail "$SITE_DOMAIN exposed the admin API"
+  ok "HTTPS, auth providers, and the web client are healthy"
 }
 
 main() {
@@ -361,6 +411,7 @@ main() {
   check_domain "$API_DOMAIN"
   ok "both domains point to $EXPECTED_PUBLIC_IP"
   check_remote
+  build_web
   commit_and_push_source
   stage_release
   configure_runtime

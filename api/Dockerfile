@@ -1,3 +1,7 @@
+# node:sqlite — which the notes-database bridge needs to read and write the
+# portable snapshot — stopped requiring --experimental-sqlite in Node 22.13.0.
+# The floating 22 tag is already well past that and only moves forward; see
+# `engines` in package.json.
 FROM node:22-slim
 
 WORKDIR /app

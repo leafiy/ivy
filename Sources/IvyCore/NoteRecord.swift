@@ -20,9 +20,8 @@ public struct NoteWindowFrame: Codable, Equatable, Sendable {
 /// notes only carry the returned URLs plus display metadata, and the whole
 /// array syncs inside the notes database snapshot.
 public struct NoteAttachment: Codable, Equatable, Identifiable, Sendable {
+    /// The OSS URL, and the only one: images are rendered from it directly.
     public var url: String
-    /// Server-generated compressed preview (≤600px wide) for image uploads.
-    public var thumbnailURL: String?
     public var name: String
     public var sizeBytes: Int64
     public var contentType: String
@@ -33,15 +32,8 @@ public struct NoteAttachment: Codable, Equatable, Identifiable, Sendable {
         contentType.lowercased().hasPrefix("image/")
     }
 
-    /// The URL the UI should render for a thumbnail; images without a
-    /// server thumbnail fall back to the original.
-    public var displayImageURL: String {
-        thumbnailURL ?? url
-    }
-
     private enum CodingKeys: String, CodingKey {
         case url
-        case thumbnailURL = "thumbnailUrl"
         case name
         case sizeBytes
         case contentType
@@ -49,13 +41,11 @@ public struct NoteAttachment: Codable, Equatable, Identifiable, Sendable {
 
     public init(
         url: String,
-        thumbnailURL: String? = nil,
         name: String,
         sizeBytes: Int64,
         contentType: String
     ) {
         self.url = url
-        self.thumbnailURL = thumbnailURL
         self.name = name
         self.sizeBytes = sizeBytes
         self.contentType = contentType

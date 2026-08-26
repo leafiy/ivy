@@ -27,7 +27,6 @@ import {
 import {
   ATTACHMENT_LIMIT_BYTES,
   NOTE_DATABASE_LIMIT_BYTES,
-  getPlanForUser,
   getStorageUsage,
 } from '../services/quota.js';
 import {
@@ -41,9 +40,12 @@ import {
 const normalizeEmail = (email) => requireString(email, 'email').toLowerCase();
 
 
-const signOAuthState = ({ provider, device }) =>
+// The state is a signed, short-lived JWT — it is the CSRF protection for the
+// redirect flow, and it also remembers which client started it so the callback
+// knows whether to come back to the app's custom scheme or to the website.
+const signOAuthState = ({ provider, device, client }) =>
   jwt.sign(
-    { type: `${provider}-oauth-state`, device },
+    { type: `${provider}-oauth-state`, device, client },
     config.clientJwt.secret,
     { expiresIn: '10m' }
   );
@@ -61,12 +63,10 @@ const serializeDevice = (device) => ({
   lastSeenAt: device.lastSeenAt.toISOString(),
 });
 
-export const buildMe = async (principal, principalType = 'account') => {
-  const [plan, devices, usage] = await Promise.all([
-    getPlanForUser(principal),
-    Device.find({ userId: principal._id }).sort({ lastSeenAt: -1 }).lean(),
-    getStorageUsage(principal),
-  ]);
+// Pure shape of the account payload, split from its lookups so the wire
+// contract can be pinned by tests. The quota block is entirely constants
+// now: no per-plan number survives, so the account's plan is never read.
+export const accountPayload = (principal, principalType, { devices, usage }) => {
   const isNamespace = principalType === 'namespace' || principalType === 'legacy-namespace';
 
   return {
@@ -80,7 +80,6 @@ export const buildMe = async (principal, principalType = 'account') => {
       expiresAt: principal.subscription?.expiresAt ? principal.subscription.expiresAt.toISOString() : null,
     },
     quota: {
-      deviceLimit: plan.deviceLimit,
       storageLimitMB: NOTE_DATABASE_LIMIT_BYTES / 1024 / 1024,
       noteDatabaseLimitMB: NOTE_DATABASE_LIMIT_BYTES / 1024 / 1024,
       attachmentLimitMB: ATTACHMENT_LIMIT_BYTES / 1024 / 1024,
@@ -100,6 +99,14 @@ export const buildMe = async (principal, principalType = 'account') => {
     },
     devices: devices.map(serializeDevice),
   };
+};
+
+export const buildMe = async (principal, principalType = 'account') => {
+  const [devices, usage] = await Promise.all([
+    Device.find({ userId: principal._id }).sort({ lastSeenAt: -1 }).lean(),
+    getStorageUsage(principal),
+  ]);
+  return accountPayload(principal, principalType, { devices, usage });
 };
 
 export const authConfig = async (_req, res) => {
@@ -127,19 +134,11 @@ const assertDevicePayload = (device) => {
   return { id, name };
 };
 
+// Devices are recorded, never rationed. The web client would otherwise be
+// locked out of any account that already reached its plan's device count,
+// and a browser mints a fresh device on every profile.
 const upsertDeviceForUser = async (user, rawDevice) => {
   const device = assertDevicePayload(rawDevice);
-  const existing = await Device.findOne({ userId: user._id, deviceId: device.id });
-
-  if (!existing) {
-    const [plan, count] = await Promise.all([
-      getPlanForUser(user),
-      Device.countDocuments({ userId: user._id }),
-    ]);
-    if (count >= plan.deviceLimit) {
-      throw apiError(403, 'DEVICE_LIMIT', 'Device limit exceeded.');
-    }
-  }
 
   await Device.updateOne(
     { userId: user._id, deviceId: device.id },
@@ -346,7 +345,7 @@ export const startGoogleOAuth = async (req, res) => {
     throw apiError(503, 'PROVIDER_NOT_CONFIGURED', 'Google login is not configured.');
   }
   const device = assertDevicePayload(req.body.device);
-  const state = signOAuthState({ provider: 'google', device });
+  const state = signOAuthState({ provider: 'google', device, client: isWebClient(req) ? 'web' : 'app' });
   const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
   url.search = new URLSearchParams({
     client_id: google.clientId,
@@ -357,6 +356,15 @@ export const startGoogleOAuth = async (req, res) => {
     prompt: 'select_account',
   }).toString();
   res.json({ authorizationURL: url.toString() });
+};
+
+// Where to send the browser after Google has answered. The macOS app listens
+// on a custom scheme; the website is an ordinary https page.
+export const oauthReturnURL = (client) => {
+  const google = config.authProviders?.google || {};
+  return client === 'web'
+    ? (google.webCallbackURL || 'https://ivy.leafiy.com/auth/google')
+    : (google.appCallbackURL || 'ivy://oauth/google');
 };
 
 export const googleOAuthCallback = async (req, res) => {
@@ -400,11 +408,17 @@ export const googleOAuthCallback = async (req, res) => {
       device,
       created,
     });
-    const callback = new URL(google.appCallbackURL);
+    const callback = new URL(oauthReturnURL(statePayload.client));
     callback.searchParams.set('code', exchangeCode);
     res.redirect(302, callback.toString());
   } catch (error) {
-    const callback = new URL(google.appCallbackURL || 'ivy://oauth/google');
+    // The state may be the thing that failed, so the client cannot always be
+    // known here; falling back to the app's scheme keeps a broken web attempt
+    // from silently swallowing the reason.
+    const client = (() => {
+      try { return jwt.verify(req.query.state, config.clientJwt.secret).client; } catch { return 'app'; }
+    })();
+    const callback = new URL(oauthReturnURL(client));
     callback.searchParams.set('error', error.code || 'OAUTH_FAILED');
     callback.searchParams.set('message', error.message || 'Google login failed.');
     res.redirect(302, callback.toString());

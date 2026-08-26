@@ -60,7 +60,9 @@ final class NotesControllerTests: XCTestCase {
         XCTAssertTrue(panel.standardWindowButton(.zoomButton)?.isHidden == true)
         XCTAssertTrue(panel.isMovableByWindowBackground)
         XCTAssertFalse(panel.becomesKeyOnlyIfNeeded)
-        XCTAssertFalse(panel.hasShadow)
+        // The window server's own shadow, reasserted after the resizable
+        // style resets the flag.
+        XCTAssertTrue(panel.hasShadow)
     }
 
     @MainActor

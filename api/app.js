@@ -9,6 +9,7 @@ import {
   requestIp,
 } from './services/rateLimit.js';
 import { bootstrapAdmin } from './controllers/admin.js';
+import { flushAllNotes } from './services/noteDatabase.js';
 
 const app = express();
 
@@ -77,6 +78,21 @@ await connectRateLimitStore();
 const server = app.listen(config.port, () => {
   console.log(`ivy-api listening on ${config.port}`);
 });
+
+// Online-only means the browser keeps no copy: a debounced note edit exists
+// only here until it reaches OSS, so shutdown has to wait for it.
+let shuttingDown = false;
+const shutdown = async (signal) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`ivy-api received ${signal}, flushing pending note databases`);
+  server.close();
+  await flushAllNotes();
+  process.exit(0);
+};
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.on(signal, () => { shutdown(signal); });
+}
 
 export { app, server };
 export default app;

@@ -8,13 +8,16 @@ export const ATTACHMENT_LIMIT_BYTES = 50 * 1024 * 1024;
 export const FREE_PLAN = {
   planId: 'free',
   name: 'Free',
-  deviceLimit: 2,
   storageLimitMB: 10,
   price: {},
   durationDays: null,
   active: true,
 };
 
+// Currently uncalled: every quota the clients see is a constant, so nothing
+// consults a user's plan. Kept because plans themselves are still real —
+// admin edits them and `listPlans` sells them — and whatever gives a
+// subscription teeth again will resolve one this way.
 export const getPlanForUser = async (user) => {
   const planId = user.subscription?.planId || 'free';
   const plan = await Plan.findOne({ planId, active: true }).lean();
@@ -23,11 +26,9 @@ export const getPlanForUser = async (user) => {
 
 const bytesToMB = (bytes) => Number((bytes / 1024 / 1024).toFixed(2));
 
-// Thumbnails live on OSS next to their originals and count against the
-// same fixed attachment quota.
-const attachmentBytesExpression = {
-  $add: ['$sizeBytes', { $ifNull: ['$thumbnailBytes', 0] }],
-};
+// One file, one size. Nothing derives a second object from an upload, so the
+// quota is simply the sum of what was sent.
+const attachmentBytesExpression = '$sizeBytes';
 
 export const getStorageUsage = async (user) => {
   const aggregate = await Attachment.aggregate([

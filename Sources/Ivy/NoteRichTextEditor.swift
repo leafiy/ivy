@@ -8,29 +8,28 @@ final class NoteEditorHandle {
     weak var textView: NoteRichTextView?
 }
 
-/// The note body editor: an AppKit text view that renders inline image
-/// markers as pictures (max 600pt wide, each on its own line) and reports
-/// its laid-out height so it can grow inside the surrounding document
-/// scroll instead of scrolling internally.
+/// The note body editor: an AppKit text view inside its own scroll view. The
+/// scroller is a translucent overlay, so the text keeps the note's full width
+/// instead of losing a gutter to a scrollbar. Inline image markers render as
+/// pictures (max 600pt wide, each on its own line).
 struct NoteRichTextEditor: NSViewRepresentable {
     @Binding var text: String
     let textColor: NSColor
     let fontSize: Double
     let handle: NoteEditorHandle
-    /// Bumped when an async image finishes loading, so SwiftUI re-queries
-    /// sizeThatFits even though the text itself is unchanged.
-    let layoutTick: Int
-    let onLayoutChange: () -> Void
-    let displayURLProvider: (String) -> String
+    /// Pasted files and images upload instead of landing in the text;
+    /// returns false for an ordinary text pasteboard.
+    let onPasteAttachments: () -> Bool
+    let onDownloadImage: (String, String) -> Void
 
     private var font: NSFont { NSFont.systemFont(ofSize: CGFloat(fontSize)) }
     private static let lineSpacing: CGFloat = 6
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, onLayoutChange: onLayoutChange)
+        Coordinator(text: $text)
     }
 
-    func makeNSView(context: Context) -> NoteRichTextView {
+    func makeNSView(context: Context) -> NSScrollView {
         // Attachment cells require the TextKit 1 stack; build it explicitly
         // instead of relying on NSTextView's default.
         let storage = NSTextStorage()
@@ -50,8 +49,16 @@ struct NoteRichTextEditor: NSViewRepresentable {
         view.allowsUndo = true
         view.drawsBackground = false
         view.textContainerInset = NSSize.zero
-        view.isVerticallyResizable = false
+        // The scroll view owns the overflow: the text view grows with its
+        // content and scrolls inside the clip view.
+        view.isVerticallyResizable = true
         view.isHorizontallyResizable = false
+        view.autoresizingMask = [.width]
+        view.minSize = NSSize(width: 0, height: 0)
+        view.maxSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
 
         let attributes = makeAttributes()
         view.font = font
@@ -60,14 +67,28 @@ struct NoteRichTextEditor: NSViewRepresentable {
         view.insertionPointColor = textColor
         view.typingAttributes = attributes
         view.defaultParagraphStyle = attributes[.paragraphStyle] as? NSParagraphStyle
+        view.onPasteAttachments = onPasteAttachments
+        view.onDownloadImage = onDownloadImage
         view.textStorage?.setAttributedString(
             NoteRichTextFormat.attributedString(
                 from: text,
                 attributes: attributes,
-                displayURLProvider: displayURLProvider,
                 layoutMetrics: view.layoutMetrics
             )
         )
+
+        let scrollView = NSScrollView()
+        scrollView.documentView = view
+        scrollView.borderType = .noBorder
+        scrollView.drawsBackground = false
+        scrollView.backgroundColor = .clear
+        scrollView.contentView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.horizontalScrollElasticity = .none
+        scrollView.automaticallyAdjustsContentInsets = false
+        Self.applyOverlayScroller(to: scrollView)
 
         context.coordinator.textView = view
         // TextKit's back-references are weak; someone must own the storage
@@ -75,13 +96,16 @@ struct NoteRichTextEditor: NSViewRepresentable {
         // the view.
         context.coordinator.retainedStorage = storage
         handle.textView = view
-        return view
+        return scrollView
     }
 
-    func updateNSView(_ nsView: NoteRichTextView, context: Context) {
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard let nsView = scrollView.documentView as? NoteRichTextView else { return }
         context.coordinator.text = $text
-        context.coordinator.onLayoutChange = onLayoutChange
         handle.textView = nsView
+        nsView.onPasteAttachments = onPasteAttachments
+        nsView.onDownloadImage = onDownloadImage
+        Self.applyOverlayScroller(to: scrollView)
         let fontChanged = nsView.renderedFontSize != font.pointSize
 
         // Never rebuild while an input method holds marked text.
@@ -97,7 +121,6 @@ struct NoteRichTextEditor: NSViewRepresentable {
             NoteRichTextFormat.attributedString(
                 from: text,
                 attributes: attributes,
-                displayURLProvider: displayURLProvider,
                 layoutMetrics: nsView.layoutMetrics
             )
         )
@@ -109,25 +132,30 @@ struct NoteRichTextEditor: NSViewRepresentable {
         nsView.setSelectedRange(NSRange(location: min(selection.location, length), length: 0))
     }
 
+    /// The editor is the note's body: it takes whatever space the note
+    /// offers and scrolls the rest, instead of reporting a fitting size of
+    /// its own the way an unsized scroll view would.
     func sizeThatFits(
         _ proposal: ProposedViewSize,
-        nsView: NoteRichTextView,
+        nsView: NSScrollView,
         context: Context
     ) -> CGSize? {
-        _ = layoutTick
-        guard
-            let container = nsView.textContainer,
-            let layoutManager = nsView.layoutManager
-        else { return nil }
-        var width = proposal.width ?? max(nsView.bounds.width, 240)
-        if !width.isFinite { width = 600 }
-        guard width > 0 else { return nil }
-        nsView.layoutMetrics.wrapWidth = width
-        container.size = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude)
-        layoutManager.ensureLayout(for: container)
-        let usedHeight = layoutManager.usedRect(for: container).height
-        let minHeight = layoutManager.defaultLineHeight(for: font) + Self.lineSpacing
-        return CGSize(width: width, height: max(usedHeight.rounded(.up), minHeight))
+        let width = proposal.width ?? nsView.frame.width
+        let height = proposal.height ?? nsView.frame.height
+        return CGSize(
+            width: width.isFinite ? width : nsView.frame.width,
+            height: height.isFinite ? height : nsView.frame.height
+        )
+    }
+
+    /// The system-wide "always show scroll bars" setting would otherwise give
+    /// this scroll view a legacy scroller that reserves a gutter beside the
+    /// text; a note is too narrow to spend width on one.
+    private static func applyOverlayScroller(to scrollView: NSScrollView) {
+        if scrollView.scrollerStyle != .overlay {
+            scrollView.scrollerStyle = .overlay
+        }
+        scrollView.verticalScroller?.knobStyle = .dark
     }
 
     private func makeAttributes() -> [NSAttributedString.Key: Any] {
@@ -143,14 +171,12 @@ struct NoteRichTextEditor: NSViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
         var text: Binding<String>
-        var onLayoutChange: () -> Void
         weak var textView: NoteRichTextView?
         var retainedStorage: NSTextStorage?
         private var imageObserver: NSObjectProtocol?
 
-        init(text: Binding<String>, onLayoutChange: @escaping () -> Void) {
+        init(text: Binding<String>) {
             self.text = text
-            self.onLayoutChange = onLayoutChange
             super.init()
             imageObserver = NotificationCenter.default.addObserver(
                 forName: NoteInlineImageStore.imageLoadedNotification,
@@ -200,18 +226,20 @@ struct NoteRichTextEditor: NSViewRepresentable {
         }
 
         /// A freshly loaded image changes its attachment cell's size, so
-        /// TextKit must relayout and SwiftUI must re-query the height.
+        /// TextKit must relayout and the text view must regrow around it.
         private func relayoutImages() {
             guard
                 let view = textView,
                 let layoutManager = view.layoutManager,
+                let container = view.textContainer,
                 let storage = view.textStorage,
                 storage.length > 0
             else { return }
             let fullRange = NSRange(location: 0, length: storage.length)
             layoutManager.invalidateLayout(forCharacterRange: fullRange, actualCharacterRange: nil)
             layoutManager.invalidateDisplay(forCharacterRange: fullRange)
-            onLayoutChange()
+            layoutManager.ensureLayout(for: container)
+            view.sizeToFit()
         }
     }
 }
@@ -239,6 +267,18 @@ final class NoteRichTextView: NSTextView {
     let layoutMetrics = NoteInlineImageLayoutMetrics()
     var renderedFontSize: CGFloat = CGFloat(NoteRecord.defaultFontSize)
 
+    /// Set by the note: turns a pasted file or picture into an upload.
+    /// Returns false for an ordinary text pasteboard.
+    var onPasteAttachments: (() -> Bool)?
+    /// Set by the note: saves one inline image (URL, filename) to disk.
+    var onDownloadImage: ((String, String) -> Void)?
+
+    /// The one inline image currently showing its download/delete controls,
+    /// with the character index it occupies so a click elsewhere can put the
+    /// controls away.
+    private weak var activeImageCell: NoteInlineImageCell?
+    private var activeImageIndex: Int?
+
     /// Where the "/" that opened the command popup sits, so choosing a
     /// command can remove it.
     private var slashLocation: Int?
@@ -260,9 +300,84 @@ final class NoteRichTextView: NSTextView {
         }
     }
 
-    /// Attachments render pictures, but typed and pasted content stays plain.
+    /// Files and pictures on the pasteboard upload as attachments, whether
+    /// they arrive through the Edit menu, the context menu, or Cmd+V. Only
+    /// text reaches the text view, and it stays plain.
     override func paste(_ sender: Any?) {
+        if onPasteAttachments?() == true { return }
         pasteAsPlainText(sender)
+    }
+
+    // MARK: - Inline image controls
+
+    /// Reveals this picture's controls and puts any other picture's away.
+    func activateImageControls(_ cell: NoteInlineImageCell, at index: Int) {
+        guard activeImageCell !== cell else { return }
+        activeImageCell?.isShowingControls = false
+        cell.isShowingControls = true
+        activeImageCell = cell
+        activeImageIndex = index
+        needsDisplay = true
+    }
+
+    func dismissImageControls() {
+        guard activeImageCell != nil else { return }
+        activeImageCell?.isShowingControls = false
+        activeImageCell = nil
+        activeImageIndex = nil
+        needsDisplay = true
+    }
+
+    /// A click anywhere but on that picture puts its controls away; the cell
+    /// itself handles the clicks that land on it.
+    override func mouseDown(with event: NSEvent) {
+        if let activeImageIndex, characterIndex(at: event) != activeImageIndex {
+            dismissImageControls()
+        }
+        super.mouseDown(with: event)
+    }
+
+    override func resignFirstResponder() -> Bool {
+        dismissImageControls()
+        return super.resignFirstResponder()
+    }
+
+    override func didChangeText() {
+        dismissImageControls()
+        super.didChangeText()
+    }
+
+    func downloadInlineImage(url: String, name: String) {
+        onDownloadImage?(url, name)
+    }
+
+    /// The delete control on an inline image: dropping the marker out of the
+    /// text is the note's delete gesture, and the note frees the uploaded
+    /// attachment behind it. One trailing newline goes too, so the picture's
+    /// line does not survive as a blank one.
+    func removeInlineImage(at index: Int) {
+        guard let storage = textStorage, index >= 0, index < storage.length else { return }
+        let ns = string as NSString
+        var range = NSRange(location: index, length: 1)
+        if range.upperBound < ns.length, ns.character(at: range.upperBound) == 0x0A {
+            range.length += 1
+        }
+        guard shouldChangeText(in: range, replacementString: "") else { return }
+        storage.replaceCharacters(in: range, with: "")
+        setSelectedRange(NSRange(location: range.location, length: 0))
+        didChangeText()
+    }
+
+    private func characterIndex(at event: NSEvent) -> Int? {
+        // Asking an empty layout for a glyph raises a range exception.
+        guard let layoutManager, let textContainer, layoutManager.numberOfGlyphs > 0 else {
+            return nil
+        }
+        let point = convert(event.locationInWindow, from: nil)
+        let origin = textContainerOrigin
+        let containerPoint = NSPoint(x: point.x - origin.x, y: point.y - origin.y)
+        let glyphIndex = layoutManager.glyphIndex(for: containerPoint, in: textContainer)
+        return layoutManager.characterIndexForGlyph(at: glyphIndex)
     }
 
     /// Inserts one pending image per line at the drop point (window
@@ -289,7 +404,6 @@ final class NoteRichTextView: NSTextView {
             let attachment = NoteInlineImageAttachment(
                 markerURL: markerURL,
                 markerName: NoteInlineImage.sanitizedName(item.name),
-                displayURL: markerURL,
                 layoutMetrics: layoutMetrics
             )
             let piece = NSMutableAttributedString(attachment: attachment)

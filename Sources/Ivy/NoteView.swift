@@ -6,9 +6,9 @@ import UniformTypeIdentifiers
 
 struct NoteView: View {
     private enum Layout {
-        /// The editor draws with zero text inset, so the wrapper carries the
-        /// full margin that puts the text edge on the controls' 24pt axis.
-        static let bodyHorizontalPadding: CGFloat = 24
+        /// The editor draws with zero text inset and its overlay scroller
+        /// floats above the text, so this is the whole side margin.
+        static let bodyHorizontalPadding: CGFloat = 16
         static let bodyTopPadding: CGFloat = 52
         static let bodyBottomPadding: CGFloat = 18
         static let topControlHorizontalPadding: CGFloat = 10
@@ -40,7 +40,6 @@ struct NoteView: View {
     @State private var fontSize: Double
     @State private var isDropTargeted = false
     @State private var editorHandle = NoteEditorHandle()
-    @State private var editorLayoutTick = 0
 
     init(
         note: NoteRecord,
@@ -134,29 +133,25 @@ struct NoteView: View {
         .onChange(of: note.fontSize) { _, newValue in
             if newValue != fontSize {
                 fontSize = newValue
-                editorLayoutTick += 1
             }
         }
     }
 
     /// The note body is one scrolling document: the rich editor lays text
     /// and dropped images out together, so a picture lives exactly where it
-    /// was dropped instead of in a thumbnail strip.
+    /// was dropped instead of in a strip of previews. The editor scrolls
+    /// itself, behind an overlay scroller that costs the text no width.
     private var documentEditor: some View {
-        ScrollView(.vertical) {
-            NoteRichTextEditor(
-                text: $text,
-                textColor: Self.nsSRGB(41, 37, 43),
-                fontSize: fontSize,
-                handle: editorHandle,
-                layoutTick: editorLayoutTick,
-                onLayoutChange: { editorLayoutTick += 1 },
-                displayURLProvider: displayURL(forImageURL:)
-            )
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-        }
-        .contentShape(Rectangle())
-        // Margins stay outside the scroll view: its AppKit backing consumes
+        NoteRichTextEditor(
+            text: $text,
+            textColor: Self.nsSRGB(41, 37, 43),
+            fontSize: fontSize,
+            handle: editorHandle,
+            onPasteAttachments: handlePasteAttachments,
+            onDownloadImage: downloadInlineImage(url:name:)
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // Margins stay outside the editor: its AppKit backing consumes
         // clicks, and the strips above and beside it are where the window
         // drag area must keep receiving them.
         .padding(.horizontal, Layout.bodyHorizontalPadding)
@@ -320,10 +315,13 @@ struct NoteView: View {
         !fileAttachments.isEmpty || !uploadingFileRows.isEmpty
     }
 
-    /// Inline markers store the original URL; rendering prefers the server's
-    /// compressed thumbnail when the attachment metadata is present.
-    private func displayURL(forImageURL url: String) -> String {
-        note.attachments.first { $0.url == url }?.displayImageURL ?? url
+    /// The download control on an inline picture saves the uploaded
+    /// original. The note's own attachment metadata is authoritative; a
+    /// picture whose record is missing still downloads under its marker name.
+    private func downloadInlineImage(url: String, name: String) {
+        let attachment = note.attachments.first { $0.url == url }
+            ?? NoteAttachment(url: url, name: name, sizeBytes: 0, contentType: "image/*")
+        onDownloadAttachment(attachment)
     }
 
     private func focusEditor() {
@@ -341,7 +339,6 @@ struct NoteView: View {
         )
         guard nextSize != fontSize else { return }
         fontSize = nextSize
-        editorLayoutTick += 1
         onFontSizeChange(note.id, nextSize)
     }
 

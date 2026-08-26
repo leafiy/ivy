@@ -74,7 +74,6 @@ export const uploadFiles = async (req, res) => {
       uuids: files.map((file) => file.uuid),
       attachments: files.map((file) => ({
         url: file.url,
-        thumbnailUrl: null,
         name: file.name,
         sizeBytes: file.sizeBytes,
         contentType: file.contentType,
@@ -107,7 +106,7 @@ export const deleteFile = async (req, res) => {
   if (!attachment) {
     throw apiError(404, 'ATTACHMENT_NOT_FOUND', 'Attachment not found.');
   }
-  const freedBytes = Number(attachment.sizeBytes || 0) + Number(attachment.thumbnailBytes || 0);
+  const freedBytes = Number(attachment.sizeBytes || 0);
   await releaseAttachmentQuota(req.user, freedBytes);
   res.json({ deleted: true, freedBytes });
 };

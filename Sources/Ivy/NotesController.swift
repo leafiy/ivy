@@ -186,7 +186,7 @@ final class NotesController: ObservableObject {
             level: Self.panelLevel(for: note.windowLevel),
             canBecomeKey: true,
             isMovable: true,
-            hasShadow: false,
+            hasShadow: true,
             styleMask: [.titled, .resizable, .fullSizeContentView],
             identifier: "ivy-note-\(note.id)",
             title: L("Ivy Note")
@@ -215,9 +215,19 @@ final class NotesController: ObservableObject {
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
         panel.isMovableByWindowBackground = true
-        panel.hasShadow = false
+        // The window server derives the shadow from what the panel actually
+        // paints, so it hugs the note's rounded silhouette and thins out with
+        // a pinned note's transparency. Applying the resizable style resets
+        // the flag, hence this second assignment.
+        panel.hasShadow = true
         panel.minSize = NotePanelLayout.minimumSize
         panel.contentMinSize = NotePanelLayout.minimumSize
+        // A pinned note floats above ordinary windows, never above a
+        // full-screen one: `.fullScreenAuxiliary` is what would let the panel
+        // join another app's full-screen space, so a full-screen browser,
+        // video, or game keeps the screen to itself. The remaining behavior
+        // still carries notes across desktops.
+        panel.collectionBehavior.remove(.fullScreenAuxiliary)
     }
 
     /// Stored frame wins. A newly-created note uses the top-right arrangement;
@@ -467,6 +477,8 @@ final class NotesController: ObservableObject {
 
             guard let updated = try store.updateWindowState(id: id, opacity: normalizedOpacity) else { return }
             replaceCachedNote(updated)
+            // The shadow is cast by the surface's alpha, which just changed.
+            panels[id]?.invalidateShadow()
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -627,7 +639,17 @@ final class NotesController: ObservableObject {
                 // Alias the local bytes to the final URL so the inline image
                 // never flashes or refetches, then swap the marker in place.
                 NoteInlineImageStore.shared.registerLocal(data: item.file.data, for: attachment.url)
-                replacePendingMarker(noteID: item.noteID, markerID: markerID, with: attachment.url)
+                guard replacePendingMarker(
+                    noteID: item.noteID,
+                    markerID: markerID,
+                    with: attachment.url
+                ) else {
+                    // The picture left the note while its bytes were still on
+                    // their way up. The note never records it, so the server
+                    // copy goes back with it.
+                    await releaseAttachment(attachment)
+                    return true
+                }
             }
             try applyAttachmentChange(noteID: item.noteID) { $0 + [attachment] }
             errorMessage = nil
@@ -648,11 +670,15 @@ final class NotesController: ObservableObject {
         refreshPanelContent(noteID: item.noteID)
     }
 
-    private func replacePendingMarker(noteID: String, markerID: String, with url: String) {
-        guard let currentText = currentNoteText(noteID) else { return }
+    /// Returns false when the marker is already gone: the user deleted the
+    /// picture before its upload finished.
+    @discardableResult
+    private func replacePendingMarker(noteID: String, markerID: String, with url: String) -> Bool {
+        guard let currentText = currentNoteText(noteID) else { return false }
         let newText = NoteInlineImage.replacingPendingURL(id: markerID, with: url, in: currentText)
-        guard newText != currentText else { return }
+        guard newText != currentText else { return false }
         updateNoteText(id: noteID, text: newText)
+        return true
     }
 
     /// Removes a rejected or failed upload's inline placeholder from the
@@ -691,14 +717,20 @@ final class NotesController: ObservableObject {
         }
 
         Task {
-            guard let token = await authTokenProvider?() else { return }
-            do {
-                try await syncClient.deleteAttachment(token: token, url: attachment.url)
-            } catch SyncClientError.server(let statusCode, _) where statusCode == 404 {
-                // Already gone server-side; nothing to free.
-            } catch {
-                errorMessage = error.localizedDescription
-            }
+            await releaseAttachment(attachment)
+        }
+    }
+
+    /// Frees an uploaded file's server-side quota. A missing record (deleted
+    /// from another device) is not an error.
+    private func releaseAttachment(_ attachment: NoteAttachment) async {
+        guard let token = await authTokenProvider?() else { return }
+        do {
+            try await syncClient.deleteAttachment(token: token, url: attachment.url)
+        } catch SyncClientError.server(let statusCode, _) where statusCode == 404 {
+            // Already gone server-side; nothing to free.
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 

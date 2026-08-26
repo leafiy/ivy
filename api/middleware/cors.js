@@ -2,7 +2,7 @@ import config from '../config/index.js';
 import { apiError } from './validate.js';
 
 const allowedHeaders = 'authorization, content-type, x-csrf-token, x-ivy-client';
-const allowedMethods = 'DELETE, GET, OPTIONS, POST, PUT';
+const allowedMethods = 'DELETE, GET, OPTIONS, PATCH, POST, PUT';
 
 export const browserCors = (req, res, next) => {
   const origin = req.get('origin');

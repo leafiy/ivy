@@ -6,6 +6,10 @@ const env = process.env.NODE_ENV || 'development';
 const isProduction = env === 'production';
 const configDirectory = path.dirname(fileURLToPath(import.meta.url));
 
+const defaultWebCallback = isProduction
+  ? 'https://ivy.leafiy.com/auth/google'
+  : 'http://localhost:5173/auth/google';
+
 const resolveAuthProviderConfig = (providers) => {
   const google = providers?.google || {};
   return {
@@ -13,6 +17,10 @@ const resolveAuthProviderConfig = (providers) => {
     google: {
       ...google,
       redirectURI: google.redirectURIs?.[env] || google.redirectURI || '',
+      // Where the API sends the browser once Google has come back to it.
+      // Google itself only ever redirects to redirectURI, so adding the web
+      // client needs no change at Google's end — this is our own second hop.
+      webCallbackURL: google.webCallbackURLs?.[env] || google.webCallbackURL || defaultWebCallback,
     },
   };
 };

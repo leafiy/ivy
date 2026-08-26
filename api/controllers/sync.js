@@ -3,6 +3,13 @@ import multer from 'multer';
 import { apiError } from '../middleware/validate.js';
 import { NOTE_DATABASE_LIMIT_BYTES, assertNoteDatabaseQuota } from '../services/quota.js';
 import { uploadFilesToLatte } from '../services/uploader.js';
+import { baseVersionFilter, invalidateNotes } from '../services/noteDatabase.js';
+import { publish } from '../services/noteEvents.js';
+import { isSQLiteDatabase } from '../services/noteSnapshot.js';
+
+// Both helpers moved to the services that own the notes database; re-exported
+// so the existing callers and tests keep their import site.
+export { baseVersionFilter, isSQLiteDatabase };
 
 const storage = multer.memoryStorage();
 
@@ -18,11 +25,6 @@ const serializeDatabase = (databaseSync) => ({
   downloadURL: databaseSync?.url || null,
   sourceDeviceId: databaseSync?.sourceDeviceId || null,
 });
-
-export const isSQLiteDatabase = (buffer) =>
-  Buffer.isBuffer(buffer)
-  && buffer.length >= 16
-  && buffer.subarray(0, 16).equals(Buffer.from('SQLite format 3\0', 'binary'));
 
 export const parseBaseVersion = (value) => {
   if (value === undefined || value === null || value === '') return null;
@@ -55,20 +57,6 @@ export const decodeDatabasePayload = (buffer, contentEncoding) => {
     throw apiError(422, 'DATABASE_INVALID', 'database payload could not be decompressed.');
   }
 };
-
-// Optimistic-lock filter: the update only lands when the stored version still
-// equals the version the client based its snapshot on. baseVersion 0 must also
-// match accounts whose databaseSync subdocument was never written.
-export const baseVersionFilter = (baseVersion) =>
-  baseVersion === 0
-    ? {
-        $or: [
-          { 'databaseSync.version': 0 },
-          { 'databaseSync.version': { $exists: false } },
-          { databaseSync: null },
-        ],
-      }
-    : { 'databaseSync.version': baseVersion };
 
 const databaseConflict = (databaseSync) =>
   apiError(
@@ -144,6 +132,17 @@ export const uploadDatabase = async (req, res) => {
     const current = await Principal.findById(req.user._id);
     throw databaseConflict(current?.databaseSync);
   }
+
+  // A client just moved the account forward; anything the bridge still holds
+  // in memory is now behind and must be re-read before it is written back.
+  invalidateNotes(req.user);
+  // A whole snapshot arrived, so there is no list of ids to name — an empty
+  // one means "everything may have moved, refetch".
+  publish(req.user._id, Principal.modelName, {
+    version: Number(user.databaseSync?.version || 0),
+    noteIds: [],
+    source: 'client',
+  });
 
   res.json({ database: serializeDatabase(user.databaseSync) });
 };

@@ -21,7 +21,6 @@ const serializeAdmin = (admin) => ({ id: admin._id.toString(), username: admin.u
 const serializePlan = (plan) => ({
   planId: plan.planId,
   name: plan.name,
-  deviceLimit: plan.deviceLimit,
   storageLimitMB: plan.storageLimitMB,
   price: plan.price || {},
   durationDays: plan.durationDays ?? null,
@@ -73,7 +72,6 @@ export const createPlan = async (req, res) => {
   const plan = await Plan.create({
     planId: requireString(req.body.planId, 'planId'),
     name: requireString(req.body.name, 'name'),
-    deviceLimit: Number(req.body.deviceLimit),
     storageLimitMB: Number(req.body.storageLimitMB),
     price: req.body.price || {},
     durationDays: req.body.durationDays ?? null,
@@ -85,7 +83,7 @@ export const createPlan = async (req, res) => {
 export const updatePlan = async (req, res) => {
   const planId = requireString(req.body.planId || req.params.planId, 'planId');
   const patch = {};
-  for (const field of ['name', 'deviceLimit', 'storageLimitMB', 'price', 'durationDays', 'active']) {
+  for (const field of ['name', 'storageLimitMB', 'price', 'durationDays', 'active']) {
     if (Object.hasOwn(req.body, field)) patch[field] = req.body[field];
   }
 
