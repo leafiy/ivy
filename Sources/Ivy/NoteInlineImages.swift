@@ -201,7 +201,7 @@ final class NoteInlineImageCell: NSTextAttachmentCell {
                 hints: [.interpolation: NSImageInterpolation.high.rawValue]
             )
         } else {
-            NSColor.black.withAlphaComponent(0.05).setFill()
+            NSColor.black.withAlphaComponent(0.05).setFill() // leafiy-exception: attachment placeholder drawn into the text-view cell
             cellFrame.fill()
             let image = IvyIcon.image.nsImage(size: 18)
             let size = image.size
@@ -249,9 +249,9 @@ final class NoteInlineImageCell: NSTextAttachmentCell {
     }
 
     private func drawControl(_ control: Control, in rect: NSRect) {
-        NSColor.white.withAlphaComponent(0.92).setFill()
+        NSColor.white.withAlphaComponent(0.92).setFill() // leafiy-exception: inline attachment control drawn into the text-view cell
         NSBezierPath(ovalIn: rect).fill()
-        NSColor.black.withAlphaComponent(0.12).setStroke()
+        NSColor.black.withAlphaComponent(0.12).setStroke() // leafiy-exception: inline attachment control drawn into the text-view cell
         NSBezierPath(ovalIn: rect.insetBy(dx: 0.5, dy: 0.5)).stroke()
 
         let icon = control.icon.nsImage(size: Metrics.controlIconSize)
@@ -304,7 +304,7 @@ final class NoteInlineImageCell: NSTextAttachmentCell {
 enum NoteRichTextFormat {
     /// Background for `==highlight==` runs; translucent so it reads on every
     /// note color.
-    static let highlightColor = NSColor(srgbRed: 1.0, green: 0.83, blue: 0.30, alpha: 0.45)
+    static let highlightColor = NSColor(srgbRed: 1.0, green: 0.83, blue: 0.30, alpha: 0.45) // leafiy-exception: ==highlight== marker over colored note paper
 
     static func attributedString(
         from text: String,

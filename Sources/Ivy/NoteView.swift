@@ -109,10 +109,10 @@ struct NoteView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(noteBackgroundColor.opacity(effectiveSurfaceOpacity))
-        .clipShape(.rect(cornerRadius: 10))
+        .clipShape(.rect(cornerRadius: LeafiyDesign.Radius.card))
         .overlay {
             if isDropTargeted {
-                RoundedRectangle(cornerRadius: 10)
+                RoundedRectangle(cornerRadius: LeafiyDesign.Radius.card)
                     .strokeBorder(noteAccentColor, lineWidth: 2)
             }
         }
@@ -212,7 +212,7 @@ struct NoteView: View {
         VStack(alignment: .leading, spacing: LeafiyDesign.Spacing.m) {
             VStack(alignment: .leading, spacing: LeafiyDesign.Spacing.s) {
                 Text(L("Note Color"))
-                    .font(.system(size: 11, weight: .medium))
+                    .font(.subheadline.weight(.medium))
                     .foregroundStyle(.secondary)
 
                 HStack(spacing: LeafiyDesign.Spacing.xs) {
@@ -238,13 +238,13 @@ struct NoteView: View {
                 VStack(alignment: .leading, spacing: LeafiyDesign.Spacing.s) {
                     HStack {
                         Text(L("Pinned Note Opacity"))
-                            .font(.system(size: 11, weight: .medium))
+                            .font(.subheadline.weight(.medium))
                             .foregroundStyle(.primary)
 
                         Spacer()
 
                         Text("\(Int(opacityPercent.rounded()))%")
-                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .font(.subheadline.weight(.medium).monospaced())
                             .foregroundStyle(.primary)
                     }
 
@@ -288,7 +288,7 @@ struct NoteView: View {
     ) -> some View {
         Button(role: role, action: action) {
             IvyIconLabel(title, icon: icon, iconSize: 13)
-                .font(.system(size: 12, weight: .medium))
+                .font(.callout.weight(.medium))
                 .foregroundStyle(role == .destructive ? Color.red : Color.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
@@ -409,13 +409,13 @@ struct NoteView: View {
                 .foregroundStyle(noteAccentColor)
 
             Text(attachment.name)
-                .font(.system(size: 12, weight: .medium))
+                .font(.callout.weight(.medium))
                 .foregroundStyle(primaryContentColor)
                 .lineLimit(1)
                 .truncationMode(.middle)
 
             Text(NoteAttachmentFormat.sizeText(attachment.sizeBytes))
-                .font(.system(size: 11))
+                .font(.subheadline)
                 .foregroundStyle(strongContentColor.opacity(0.5))
                 .layoutPriority(1)
 
@@ -454,7 +454,7 @@ struct NoteView: View {
                 .foregroundStyle(strongContentColor.opacity(0.35))
 
             Text(item.name)
-                .font(.system(size: 12, weight: .medium))
+                .font(.callout.weight(.medium))
                 .foregroundStyle(primaryContentColor.opacity(0.6))
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -622,11 +622,11 @@ struct NoteView: View {
     }
 
     private static func srgb(_ red: Double, _ green: Double, _ blue: Double) -> Color {
-        Color(.sRGB, red: red / 255, green: green / 255, blue: blue / 255)
+        Color(.sRGB, red: red / 255, green: green / 255, blue: blue / 255) // leafiy-exception: ivy note-paper palette, product personality (Explicit Exception)
     }
 
     private static func nsSRGB(_ red: CGFloat, _ green: CGFloat, _ blue: CGFloat) -> NSColor {
-        NSColor(srgbRed: red / 255, green: green / 255, blue: blue / 255, alpha: 1)
+        NSColor(srgbRed: red / 255, green: green / 255, blue: blue / 255, alpha: 1) // leafiy-exception: ivy note-paper palette, product personality (Explicit Exception)
     }
 
 }
@@ -660,12 +660,12 @@ private struct NoteOpacitySlider: View {
                     .offset(x: Layout.thumbDiameter / 2)
 
                 Circle()
-                    .fill(Color.white)
+                    .fill(Color.white) // leafiy-exception: custom opacity-slider thumb on colored note paper; review candidate for system Slider
                     .overlay {
                         Circle()
-                            .stroke(Color.black.opacity(0.28), lineWidth: 1)
+                            .stroke(Color.black.opacity(0.28), lineWidth: 1) // leafiy-exception: custom opacity-slider thumb on colored note paper
                     }
-                    .shadow(color: Color.black.opacity(0.22), radius: 1.5, y: 1)
+                    .shadow(color: Color.black.opacity(0.22), radius: 1.5, y: 1) // leafiy-exception: custom opacity-slider thumb on colored note paper
                     .frame(width: Layout.thumbDiameter, height: Layout.thumbDiameter)
                     .offset(x: travel * progress)
             }

@@ -48,12 +48,14 @@ pnpm test     # the inline-markup parser's boundary table
 ```
 
 `web/deploy.sh` builds `dist/`, uploads it beside the live bundle under
-`/srv/ivy-web`, and moves one symlink, so a visitor's next page load is the new
-build and there is no half-swapped state in between; a failed smoke test puts
-the previous bundle straight back. It touches neither MongoDB, nor the API
-container, nor the Caddy configuration — `./api/deploy.sh` owns those, and it
-has to have run once so the site exists to swap under. `release.sh` runs
-`web/deploy.sh` on every release, ahead of the API.
+`/srv/ivy-web`, moves one symlink, and installs `api/deploy/ivy.caddy` when the
+host's copy differs from it, so a visitor's next page load is the new build and
+there is no half-swapped state in between; a failed smoke test puts the
+previous bundle, and the previous Caddy site, straight back. It touches neither
+MongoDB nor the API container — `./api/deploy.sh` owns those. The Caddy site
+file is shared by the two scripts and installed by whichever runs, so neither
+needs the other to have gone first. `release.sh` runs `web/deploy.sh` on every
+release, ahead of the API.
 
 It is React 19 on [Astryx](https://github.com/facebook/astryx), and it holds no
 notes of its own: the API parses and writes the same portable SQLite snapshot

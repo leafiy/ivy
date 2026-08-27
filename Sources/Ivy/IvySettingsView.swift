@@ -234,7 +234,7 @@ private struct AccountSettingsContent: View {
     private var statusMessage: some View {
         if controller.isWorking {
             Section {
-                HStack(spacing: 8) {
+                HStack(spacing: LeafiyDesign.Spacing.s) {
                     ProgressView().controlSize(.small)
                     Text(L("Working"))
                         .foregroundStyle(.secondary)
@@ -261,7 +261,7 @@ private struct CapacityRow: View {
     private var isOverLimit: Bool { usedMB > limitMB }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: LeafiyDesign.Spacing.s) {
             HStack {
                 IvyIconLabel(title, icon: icon)
                 Spacer()

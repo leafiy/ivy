@@ -193,7 +193,7 @@ install -m 0600 "$remote_release/api/config/auth.providers.json" "$remote_base/s
 # The static client goes somewhere Caddy can actually reach. It carries no
 # secrets — it is the bundle every visitor downloads — so world-readable is
 # exactly right.
-install -d -m 0755 "$web_root/releases/$release_id"
+install -d -m 0755 "$web_root" "$web_root/releases" "$web_root/releases/$release_id"
 tar -xf "$remote_release/web-dist.tar" -C "$web_root/releases/$release_id"
 chmod -R a+rX "$web_root/releases/$release_id"
 [ -f "$web_root/releases/$release_id/index.html" ]

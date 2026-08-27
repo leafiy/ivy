@@ -737,11 +737,7 @@ final class NotesController: ObservableObject {
     func downloadAttachment(_ attachment: NoteAttachment) {
         guard let remoteURL = URL(string: attachment.url) else { return }
 
-        let savePanel = NSSavePanel()
-        savePanel.nameFieldStringValue = attachment.name
-        savePanel.canCreateDirectories = true
-        NSApp.activate(ignoringOtherApps: true)
-        guard savePanel.runModal() == .OK, let destination = savePanel.url else { return }
+        guard let destination = LeafiyFilePanel.save(suggestedName: attachment.name) else { return }
 
         Task {
             do {
@@ -857,15 +853,12 @@ final class NotesController: ObservableObject {
     }
 
     private func confirmDeleteNote() -> Bool {
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = L("Delete this note?")
-        alert.informativeText = L("Deleting syncs to every device and cannot be undone.")
-        alert.addButton(withTitle: L("Delete"))
-        alert.addButton(withTitle: L("Cancel"))
-        alert.buttons.first?.hasDestructiveAction = true
-        NSApp.activate(ignoringOtherApps: true)
-        return alert.runModal() == .alertFirstButtonReturn
+        return LeafiyAlert.confirm(
+            L("Delete this note?"),
+            message: L("Deleting syncs to every device and cannot be undone."),
+            confirmTitle: L("Delete"),
+            destructive: true
+        )
     }
 
     private func presentError(_ message: String) {
@@ -873,13 +866,7 @@ final class NotesController: ObservableObject {
     }
 
     private func presentAlert(title: String, message: String) {
-        let alert = NSAlert()
-        alert.alertStyle = .critical
-        alert.messageText = title
-        alert.informativeText = message
-        alert.addButton(withTitle: L("OK"))
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
+        LeafiyAlert.error(title, message: message)
     }
 
     private func replaceCachedNote(_ note: NoteRecord) {

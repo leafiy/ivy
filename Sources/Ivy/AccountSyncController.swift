@@ -2,23 +2,20 @@ import AppKit
 import AuthenticationServices
 import Foundation
 import IvyCore
-import Security
 
-struct ManualSyncThrottle {
+/// Per-account throttle for manual syncs. In-memory on purpose: ADR-0002
+/// leaves no persistent store for transient state, and a relaunch may
+/// legitimately allow a fresh manual sync.
+final class ManualSyncThrottle {
     static let minimumInterval: TimeInterval = 10 * 60
-    let defaults: UserDefaults
-
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
-    }
+    private var lastManualSyncByAccount: [String: Date] = [:]
 
     func consume(accountID: String, now: Date = Date()) -> Bool {
-        let key = "ivy.last-manual-sync.\(accountID)"
-        if let lastSync = defaults.object(forKey: key) as? Date,
+        if let lastSync = lastManualSyncByAccount[accountID],
            now.timeIntervalSince(lastSync) < Self.minimumInterval {
             return false
         }
-        defaults.set(now, forKey: key)
+        lastManualSyncByAccount[accountID] = now
         return true
     }
 }
@@ -43,7 +40,7 @@ final class AccountSyncController: NSObject,
 
     private weak var owner: IvyModel?
     private let noteStore: NoteStore?
-    private let tokenStore = AuthTokenStore()
+    private var tokenStore: AuthTokenStore { AuthTokenStore(owner: owner) }
     private let manualSyncThrottle = ManualSyncThrottle()
     private var contentObserver: NSObjectProtocol?
     private var syncTask: Task<Void, Never>?
@@ -483,63 +480,41 @@ private struct AccountSyncError: LocalizedError {
     var errorDescription: String? { message }
 }
 
-private struct StoredClientSession: Codable {
-    let accessToken: String
-    let refreshToken: String
-    let expiresAt: Date
-
+extension SyncSession {
     init(response: AuthResponse) {
-        accessToken = response.accessToken
-        refreshToken = response.refreshToken
-        expiresAt = Date().addingTimeInterval(TimeInterval(response.expiresIn))
+        self.init(
+            accessToken: response.accessToken,
+            refreshToken: response.refreshToken,
+            expiresAt: Date().addingTimeInterval(TimeInterval(response.expiresIn))
+        )
     }
 }
 
-private final class AuthTokenStore {
-    private let service = "com.qiansmile.ivy.sync"
-    private let account = "client-token"
+/// Persists the sync session as an ordinary field of ivy's Settings document
+/// (ADR-0002: one plaintext settings.json, Keychain is banned family-wide).
+@MainActor
+private struct AuthTokenStore {
+    private weak var owner: IvyModel?
 
-    func load() -> StoredClientSession? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        var result: AnyObject?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data,
-              let session = try? JSONDecoder().decode(StoredClientSession.self, from: data)
-        else {
-            delete()
-            return nil
-        }
-        return session
+    init(owner: IvyModel?) {
+        self.owner = owner
+    }
+
+    func load() -> SyncSession? {
+        owner?.settings.syncSession
     }
 
     func save(_ response: AuthResponse) throws {
-        delete()
-        let data = try JSONEncoder().encode(StoredClientSession(response: response))
-        let attributes: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-        ]
-        let status = SecItemAdd(attributes as CFDictionary, nil)
-        guard status == errSecSuccess else {
-            throw AccountSyncError(message: "Keychain error \\(status)")
+        guard let owner else {
+            throw AccountSyncError(message: "Settings are unavailable")
+        }
+        owner.updateSettings { $0.syncSession = SyncSession(response: response) }
+        if let message = owner.lastErrorMessage {
+            throw AccountSyncError(message: message)
         }
     }
 
     func delete() {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
-        SecItemDelete(query as CFDictionary)
+        owner?.updateSettings { $0.syncSession = nil }
     }
 }

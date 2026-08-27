@@ -23,6 +23,20 @@ public enum NoteColor: String, Codable, CaseIterable, Equatable, Sendable {
     public static let allowedRawValues = Set(allCases.map(\.rawValue))
 }
 
+/// The signed-in sync session. A Secret, therefore an ordinary Settings
+/// field stored in plaintext settings.json (ADR-0002).
+public struct SyncSession: Codable, Equatable, Sendable {
+    public var accessToken: String
+    public var refreshToken: String
+    public var expiresAt: Date
+
+    public init(accessToken: String, refreshToken: String, expiresAt: Date) {
+        self.accessToken = accessToken
+        self.refreshToken = refreshToken
+        self.expiresAt = expiresAt
+    }
+}
+
 public struct AppSettings: Codable, Equatable, LeafiyAppSettings {
     public var noteWindowLevel: NoteWindowLevel
     public var defaultNoteColor: String
@@ -35,6 +49,7 @@ public struct AppSettings: Codable, Equatable, LeafiyAppSettings {
     public var applicationIconMode: LeafiyApplicationIconMode
 
     public var allNotesCollapsed: Bool
+    public var syncSession: SyncSession?
 
     private enum CodingKeys: String, CodingKey {
         case noteWindowLevel
@@ -48,6 +63,7 @@ public struct AppSettings: Codable, Equatable, LeafiyAppSettings {
         case launchAtLogin
         case applicationIconMode
         case allNotesCollapsed
+        case syncSession
     }
     public init(
         noteWindowLevel: NoteWindowLevel = .normal,
@@ -59,7 +75,8 @@ public struct AppSettings: Codable, Equatable, LeafiyAppSettings {
         appLanguage: String = AppLanguage.system.rawValue,
         launchAtLogin: Bool = false,
         applicationIconMode: LeafiyApplicationIconMode = .menuBar,
-        allNotesCollapsed: Bool = false
+        allNotesCollapsed: Bool = false,
+        syncSession: SyncSession? = nil
     ) {
         self.noteWindowLevel = noteWindowLevel
         self.defaultNoteColor = defaultNoteColor
@@ -71,6 +88,7 @@ public struct AppSettings: Codable, Equatable, LeafiyAppSettings {
         self.launchAtLogin = launchAtLogin
         self.applicationIconMode = applicationIconMode
         self.allNotesCollapsed = allNotesCollapsed
+        self.syncSession = syncSession
     }
 
     public init(from decoder: Decoder) throws {
@@ -95,6 +113,7 @@ public struct AppSettings: Codable, Equatable, LeafiyAppSettings {
             forKey: .applicationIconMode
         ) ?? defaults.applicationIconMode
         allNotesCollapsed = try container.decodeIfPresent(Bool.self, forKey: .allNotesCollapsed) ?? defaults.allNotesCollapsed
+        syncSession = try container.decodeIfPresent(SyncSession.self, forKey: .syncSession)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -109,6 +128,7 @@ public struct AppSettings: Codable, Equatable, LeafiyAppSettings {
         try container.encode(launchAtLogin, forKey: .launchAtLogin)
         try container.encode(applicationIconMode, forKey: .applicationIconMode)
         try container.encode(allNotesCollapsed, forKey: .allNotesCollapsed)
+        try container.encodeIfPresent(syncSession, forKey: .syncSession)
     }
 
 

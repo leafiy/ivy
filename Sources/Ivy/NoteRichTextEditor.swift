@@ -22,7 +22,7 @@ struct NoteRichTextEditor: NSViewRepresentable {
     let onPasteAttachments: () -> Bool
     let onDownloadImage: (String, String) -> Void
 
-    private var font: NSFont { NSFont.systemFont(ofSize: CGFloat(fontSize)) }
+    private var font: NSFont { NSFont.systemFont(ofSize: CGFloat(fontSize)) } // leafiy-exception: user-chosen note font size
     private static let lineSpacing: CGFloat = 6
 
     func makeCoordinator() -> Coordinator {

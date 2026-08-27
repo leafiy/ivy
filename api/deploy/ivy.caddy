@@ -1,3 +1,8 @@
+# Both Ivy domains, installed as /etc/caddy/sites/ivy.caddy by whichever of
+# ./api/deploy.sh and ./web/deploy.sh runs from this checkout, so neither has
+# to go first: the web script skips the install when the host's copy already
+# matches this file, and puts the previous copy back if its smoke test fails.
+
 ivy-api.leafiy.com {
     encode zstd gzip
 
