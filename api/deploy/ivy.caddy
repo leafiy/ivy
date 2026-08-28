@@ -34,6 +34,13 @@ ivy.leafiy.com {
         Content-Security-Policy "default-src 'self'; connect-src 'self' https://ivy-api.leafiy.com https://uploader.qiansmile.com; img-src 'self' data: https://files.qiansmile.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; frame-ancestors 'none'; base-uri 'none'"
     }
 
+    # The SPA catches arbitrary deep links, but the local-only admin namespace
+    # must fail closed instead of being answered with the public index page.
+    @private path /admin-api/*
+    handle @private {
+        respond 404
+    }
+
     # Hashed asset filenames are immutable, so they can be cached hard. The
     # entry document never is, or a deploy would not reach anyone still holding
     # the old one.
