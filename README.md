@@ -22,11 +22,11 @@ ADMIN_PASSWORD='replace-me' \
 npm run dev
 ```
 
-`release.sh` deploys the API before it publishes the app's update feed. When a
-release changes what the API sends to existing clients, run it as
-`DEPLOY_API=0 sh release.sh` first and `./api/deploy.sh` once those clients have
-had a chance to update — otherwise the running version breaks before its
-replacement is available.
+`release.sh` publishes the app and its update feed, deploys the web client, then
+deploys the API — automatically, without prompting. When a release changes what
+the API sends to existing clients, run it as `DEPLOY_API=0 sh release.sh` first
+and `./api/deploy.sh` once those clients have had a chance to update —
+otherwise the running version breaks before its replacement is available.
 
 For production, `./api/deploy.sh` stages and pushes the current branch, uploads that exact revision to the `leafiy.com` server, builds an isolated MongoDB and API runtime, installs the Caddy sites, and runs public HTTPS smoke tests. macOS clients use `https://ivy-api.leafiy.com`; `https://ivy.leafiy.com` serves the web client from `web/`, built by the deploy script and installed under `/srv/ivy-web` where Caddy can read it. Neither domain exposes the admin. The admin remains local-only, with its Vite development proxy targeting the production API. The uploader remains `https://uploader.qiansmile.com/api`. Run `./api/deploy.sh --help` for prerequisites and environment overrides.
 
