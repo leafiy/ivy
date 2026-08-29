@@ -27,8 +27,8 @@ npm run dev
 Production is one `git push`:
 
 ```sh
-sh deploy/setup.sh   # once per machine or host: bare repo, secrets, hook, `prod` remote
-sh deploy.sh         # push main to origin and to the host
+sh deploy.sh   # push main to origin and to the host; the first run on a machine
+               # also prepares the host and adds the `prod` remote (deploy/setup.sh)
 ```
 
 The host cannot reach the internal Gitea, so the code goes to it directly: a
