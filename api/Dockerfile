@@ -12,6 +12,9 @@ RUN corepack enable \
 
 ARG IVY_SOURCE_REVISION=development
 LABEL org.opencontainers.image.revision=$IVY_SOURCE_REVISION
+# The label is for `docker image inspect`; the process reads the env, and
+# reports it from /api/v1/health so deploy.sh can check who answers the port.
+ENV IVY_SOURCE_REVISION=$IVY_SOURCE_REVISION
 
 COPY . .
 

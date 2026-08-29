@@ -20,6 +20,10 @@ services:
   api:
     build:
       context: ./api
+      args:
+        # The deploy hook sets this to the commit it is deploying; the API
+        # reports it from /api/v1/health so the hook can verify who answers.
+        IVY_SOURCE_REVISION: ${IVY_SOURCE_REVISION:-development}
     image: ivy-api:local
     restart: unless-stopped
     depends_on:

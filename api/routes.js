@@ -16,6 +16,15 @@ import * as adminController from './controllers/admin.js';
 const router = express.Router();
 const apiPrefix = '/api/v1';
 const adminApiPrefix = '/admin-api/v1';
+
+// Which build is answering. Every other public endpoint looks the same across
+// releases, so this is the only way a deploy can tell that the process it just
+// started is the one the public hostname actually reaches.
+router.get(`${apiPrefix}/health`, (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ ok: true, revision: config.sourceRevision });
+});
+
 const policyLimiter = (scope, policyName, key) => {
   const policy = config.rateLimit.policies[policyName];
   return createRateLimiter({

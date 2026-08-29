@@ -22,13 +22,33 @@ ADMIN_PASSWORD='replace-me' \
 npm run dev
 ```
 
-`release.sh` publishes the app and its update feed, deploys the web client, then
-deploys the API — automatically, without prompting. When a release changes what
-the API sends to existing clients, run it as `DEPLOY_API=0 sh release.sh` first
-and `./api/deploy.sh` once those clients have had a chance to update —
-otherwise the running version breaks before its replacement is available.
+## Deploy
 
-For production, `./api/deploy.sh` stages and pushes the current branch, uploads that exact revision to the `leafiy.com` server, builds an isolated MongoDB and API runtime, installs the Caddy sites, and runs public HTTPS smoke tests. macOS clients use `https://ivy-api.leafiy.com`; `https://ivy.leafiy.com` serves the web client from `web/`, built by the deploy script and installed under `/srv/ivy-web` where Caddy can read it. Neither domain exposes the admin. The admin remains local-only, with its Vite development proxy targeting the production API. The uploader remains `https://uploader.qiansmile.com/api`. Run `./api/deploy.sh --help` for prerequisites and environment overrides.
+Production is one `git push`:
+
+```sh
+sh deploy/setup.sh   # once per machine or host: bare repo, secrets, hook, `prod` remote
+sh deploy.sh         # push main to origin and to the host
+```
+
+The host cannot reach the internal Gitea, so the code goes to it directly: a
+bare repository at `/root/code/ivy.git` whose `pre-receive` hook
+(`deploy/pre-receive`) checks the pushed commit out to `/root/code/ivy/src`,
+builds the web client in Docker and drops `dist/` under `/srv/ivy-web` for
+Caddy, builds the API image, restarts the API, installs `deploy/ivy.caddy` if
+it changed, and then refuses to finish until `https://ivy-api.leafiy.com/api/v1/health`
+reports that very commit and `https://ivy.leafiy.com` serves the bundle. A
+failed deploy rejects the push, so `deploy.sh` exits non-zero and nothing is
+reported as shipped that is not answering. Secrets live only in `/root/code/ivy/.env`
+on the host; `api/config/auth.providers.json` travels with the checkout.
+
+`release.sh` runs `sh deploy.sh` as its last step, after the app and its update
+feed are published. When a release changes what the API sends to clients
+already installed, run `DEPLOY=0 sh release.sh` and `sh deploy.sh` once those
+clients have had a chance to update — otherwise the running version breaks
+before its replacement is available.
+
+macOS clients use `https://ivy-api.leafiy.com`; `https://ivy.leafiy.com` serves the web client. Neither domain exposes the admin. The admin remains local-only, with its Vite development proxy targeting the production API. The uploader remains `https://uploader.qiansmile.com/api`.
 
 See `api/config/README.md` for email and Google provider fields. Notes sync as one portable SQLite database. The database limit is 10 MB per account; attachments have a separate 50 MB limit and store only their uploaded URLs in SQLite.
 
@@ -44,18 +64,13 @@ pnpm install
 pnpm dev      # http://localhost:5173, proxying /api/v1 to the production API
 pnpm build    # → web/dist
 pnpm test     # the inline-markup parser's boundary table
-./deploy.sh   # → https://ivy.leafiy.com
 ```
 
-`web/deploy.sh` builds `dist/`, uploads it beside the live bundle under
-`/srv/ivy-web`, moves one symlink, and installs `api/deploy/ivy.caddy` when the
-host's copy differs from it, so a visitor's next page load is the new build and
-there is no half-swapped state in between; a failed smoke test puts the
-previous bundle, and the previous Caddy site, straight back. It touches neither
-MongoDB nor the API container — `./api/deploy.sh` owns those. The Caddy site
-file is shared by the two scripts and installed by whichever runs, so neither
-needs the other to have gone first. `release.sh` runs `web/deploy.sh` on every
-release, ahead of the API.
+In production it is built on the host by `web/Dockerfile` and served by Caddy
+from `/srv/ivy-web/current`, a symlink the deploy hook moves once the bundle is
+in place, so a visitor's next page load is the new build and there is no
+half-swapped state in between. It deploys together with the API — see Deploy
+above.
 
 It is React 19 on [Astryx](https://github.com/facebook/astryx), and it holds no
 notes of its own: the API parses and writes the same portable SQLite snapshot

@@ -68,6 +68,9 @@ export const noteColors = ['white', 'yellow', 'green', 'blue', 'pink', 'purple',
 const common = {
   env,
   port: intFromEnv('PORT', 7788),
+  // Stamped into the image by deploy.sh so a running process can say which
+  // release it is; /api/v1/health reports it and the deploy asserts on it.
+  sourceRevision: process.env.IVY_SOURCE_REVISION || 'development',
   clientJwt: {
     secret: requireSecret('CLIENT_JWT_SECRET', 'dev-client-secret-change-me'),
     expiresInSeconds: intFromEnv('CLIENT_JWT_EXPIRES_SECONDS', 15 * 60),
