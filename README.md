@@ -39,7 +39,9 @@ Caddy, builds the API image, restarts the API, installs `deploy/ivy.caddy` if
 it changed, and then refuses to finish until `https://ivy-api.leafiy.com/api/v1/health`
 reports that very commit and `https://ivy.leafiy.com` serves the bundle. A
 failed deploy rejects the push, so `deploy.sh` exits non-zero and nothing is
-reported as shipped that is not answering. Secrets live only in `/root/code/ivy/.env`
+reported as shipped that is not answering. If the ssh session drops mid-build,
+the host carries on and `deploy.sh` waits until it answers as HEAD; the host
+keeps every deploy's output in `/root/code/ivy/deploy.log`. Secrets live only in `/root/code/ivy/.env`
 on the host; `api/config/auth.providers.json` travels with the checkout.
 
 `release.sh` runs `sh deploy.sh` as its last step, after the app and its update

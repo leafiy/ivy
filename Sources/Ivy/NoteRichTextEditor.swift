@@ -252,9 +252,10 @@ enum NoteInlineStyleCommand {
     case highlight
 }
 
-/// NSTextView subclass that keeps pasted content plain, lets the note insert
-/// pending inline images at a drop point, and carries the note's quick
-/// formatting: the "/" command popup, todo checkboxes, and inline styles.
+/// NSTextView subclass that keeps pasted content plain, copies selected
+/// pictures as real image bytes, lets the note insert pending inline images
+/// at a drop point, and carries the note's quick formatting: the "/" command
+/// popup, todo checkboxes, and inline styles.
 final class NoteRichTextView: NSTextView {
     struct PendingImage {
         let markerID: String
@@ -306,6 +307,42 @@ final class NoteRichTextView: NSTextView {
     override func paste(_ sender: Any?) {
         if onPasteAttachments?() == true { return }
         pasteAsPlainText(sender)
+    }
+
+    /// A selection that carries pictures copies their real bytes — words as
+    /// plain text and as RTFD with the pictures embedded, plus one image item
+    /// per picture — so any target pastes the picture itself, never a
+    /// `![name](url)` marker or its URL.
+    override func copy(_ sender: Any?) {
+        if copySelectionWithImages() { return }
+        super.copy(sender)
+    }
+
+    override func cut(_ sender: Any?) {
+        guard copySelectionWithImages() else {
+            super.cut(sender)
+            return
+        }
+        let range = selectedRange()
+        guard shouldChangeText(in: range, replacementString: "") else { return }
+        textStorage?.replaceCharacters(in: range, with: "")
+        setSelectedRange(NSRange(location: range.location, length: 0))
+        didChangeText()
+    }
+
+    /// Writes the selection with its pictures to the general pasteboard.
+    /// False when it holds no picture whose bytes have arrived; the ordinary
+    /// text copy handles that selection.
+    private func copySelectionWithImages() -> Bool {
+        let range = selectedRange()
+        guard range.length > 0, let storage = textStorage else { return false }
+        guard let items = NoteRichTextFormat.pasteboardItems(
+            forSelection: storage.attributedSubstring(from: range)
+        ) else { return false }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.writeObjects(items)
+        return true
     }
 
     // MARK: - Inline image controls

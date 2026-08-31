@@ -1,23 +1,35 @@
 import AppKit
 import IvyCore
+import UniformTypeIdentifiers
 
 /// Image bytes for inline note images. Freshly dropped images register their
 /// local data here (keyed by the pending marker URL, later aliased to the
 /// uploaded URL) so they render instantly; markers synced from other devices
-/// fetch their bytes once and cache them. Posts `imageLoadedNotification`
-/// when bytes arrive so open editors can relayout the waiting cell.
+/// fetch their bytes once and cache them. The original bytes stay beside the
+/// decoded image so a copy can put the real picture on the pasteboard. Posts
+/// `imageLoadedNotification` when bytes arrive so open editors can relayout
+/// the waiting cell.
 @MainActor
 final class NoteInlineImageStore {
     static let shared = NoteInlineImageStore()
     static let imageLoadedNotification = Notification.Name("NoteInlineImageStore.imageLoaded")
 
     private var images: [String: NSImage] = [:]
+    private var datas: [String: Data] = [:]
     private var inFlight: Set<String> = []
 
     func registerLocal(data: Data, for key: String) {
         guard let image = NSImage(data: data) else { return }
         images[key] = image
+        datas[key] = data
         NotificationCenter.default.post(name: Self.imageLoadedNotification, object: nil)
+    }
+
+    /// The decoded image and its original bytes, once both have arrived; a
+    /// marker still waiting on its fetch has nothing to copy yet.
+    func loadedImage(for key: String) -> (image: NSImage, data: Data)? {
+        guard let image = images[key], let data = datas[key] else { return nil }
+        return (image, data)
     }
 
     /// Returns the cached image, kicking off a one-shot fetch of `fetchURL`
@@ -39,6 +51,7 @@ final class NoteInlineImageStore {
                 let image = NSImage(data: data)
             else { return }
             images[key] = image
+            datas[key] = data
             NotificationCenter.default.post(name: Self.imageLoadedNotification, object: nil)
         }
         return nil
@@ -383,6 +396,153 @@ enum NoteRichTextFormat {
         }
         flushSpans()
         return output
+    }
+
+    // MARK: - Copying
+
+    /// One picture of a copied selection: bytes the pasteboard can carry and
+    /// the decoded image behind the PNG/TIFF fallback flavors.
+    private struct CopiedInlineImage {
+        let name: String
+        let data: Data
+        let type: NSPasteboard.PasteboardType
+        let image: NSImage
+    }
+
+    /// Pasteboard items for a copied selection that carries inline pictures:
+    /// the pictures travel as their real bytes, never as `![name](url)`
+    /// markers or bare URLs. The first item holds the words — plain text
+    /// without the pictures, and RTFD with them embedded — and each picture
+    /// follows as its own image item so image-minded targets paste it
+    /// directly. Returns nil when no selected picture has its bytes yet;
+    /// ordinary text copying handles that selection.
+    @MainActor
+    static func pasteboardItems(forSelection attributed: NSAttributedString) -> [NSPasteboardItem]? {
+        var plain = ""
+        let rich = NSMutableAttributedString()
+        var images: [CopiedInlineImage] = []
+
+        let fullRange = NSRange(location: 0, length: attributed.length)
+        attributed.enumerateAttributes(in: fullRange, options: []) { attrs, range, _ in
+            if let marker = attrs[.attachment] as? NoteInlineImageAttachment {
+                guard let copied = copiedImage(for: marker) else { return }
+                images.append(copied)
+                let wrapper = FileWrapper(regularFileWithContents: copied.data)
+                wrapper.preferredFilename = copied.name
+                let piece = NSMutableAttributedString(
+                    attachment: NSTextAttachment(fileWrapper: wrapper)
+                )
+                var pieceAttrs = attrs
+                pieceAttrs.removeValue(forKey: .attachment)
+                piece.addAttributes(pieceAttrs, range: NSRange(location: 0, length: piece.length))
+                rich.append(piece)
+            } else if let todo = attrs[.attachment] as? NoteTodoCheckboxAttachment {
+                // Outside ivy a checkbox is its markdown marker, the same
+                // form every other client reads.
+                let marker = NoteTodoItem.marker(checked: todo.isChecked)
+                plain += marker
+                var markerAttrs = attrs
+                markerAttrs.removeValue(forKey: .attachment)
+                markerAttrs.removeValue(forKey: .cursor)
+                rich.append(NSAttributedString(string: marker, attributes: markerAttrs))
+            } else if attrs[.attachment] != nil {
+                // Foreign attachments have nothing to give a pasteboard.
+            } else {
+                let piece = (attributed.string as NSString)
+                    .substring(with: range)
+                    .replacingOccurrences(of: "\u{FFFC}", with: "")
+                guard !piece.isEmpty else { return }
+                plain += piece
+                rich.append(NSAttributedString(string: piece, attributes: attrs))
+            }
+        }
+        guard !images.isEmpty else { return nil }
+
+        var items: [NSPasteboardItem] = []
+        if !plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let words = NSPasteboardItem()
+            words.setString(plain, forType: .string)
+            if let rtfd = try? rich.data(
+                from: NSRange(location: 0, length: rich.length),
+                documentAttributes: [.documentType: NSAttributedString.DocumentType.rtfd]
+            ) {
+                words.setData(rtfd, forType: .rtfd)
+            }
+            items.append(words)
+        }
+        for image in images {
+            items.append(pasteboardItem(for: image))
+        }
+        return items
+    }
+
+    @MainActor
+    private static func copiedImage(for marker: NoteInlineImageAttachment) -> CopiedInlineImage? {
+        guard let loaded = NoteInlineImageStore.shared.loadedImage(for: marker.markerURL) else {
+            return nil
+        }
+        if let flavor = sniffedFlavor(of: loaded.data) {
+            return CopiedInlineImage(
+                name: exportName(marker.markerName, fileExtension: flavor.fileExtension),
+                data: loaded.data,
+                type: flavor.type,
+                image: loaded.image
+            )
+        }
+        // Bytes most targets cannot read (WebP, HEIC) travel re-encoded.
+        guard let png = pngData(from: loaded.image) else { return nil }
+        return CopiedInlineImage(
+            name: exportName(marker.markerName, fileExtension: "png"),
+            data: png,
+            type: .png,
+            image: loaded.image
+        )
+    }
+
+    /// The original bytes under their own flavor — so a paste back into ivy
+    /// uploads them verbatim — plus the classic TIFF flavor for targets that
+    /// read nothing newer. No PNG re-encode beside a JPEG or GIF: ivy's own
+    /// paste would prefer it and trade the original for a bigger upload.
+    private static func pasteboardItem(for image: CopiedInlineImage) -> NSPasteboardItem {
+        let item = NSPasteboardItem()
+        item.setData(image.data, forType: image.type)
+        if let tiff = image.image.tiffRepresentation {
+            item.setData(tiff, forType: .tiff)
+        }
+        return item
+    }
+
+    /// The pasteboard flavor the bytes already are, read from their magic
+    /// numbers; nil for anything that must be re-encoded first.
+    private static func sniffedFlavor(
+        of data: Data
+    ) -> (type: NSPasteboard.PasteboardType, fileExtension: String)? {
+        if data.starts(with: [0x89, 0x50, 0x4E, 0x47]) {
+            return (.png, "png")
+        }
+        if data.starts(with: [0xFF, 0xD8, 0xFF]) {
+            return (NSPasteboard.PasteboardType(UTType.jpeg.identifier), "jpg")
+        }
+        if data.starts(with: [0x47, 0x49, 0x46]) {
+            return (NSPasteboard.PasteboardType(UTType.gif.identifier), "gif")
+        }
+        return nil
+    }
+
+    private static func pngData(from image: NSImage) -> Data? {
+        guard
+            let tiff = image.tiffRepresentation,
+            let representation = NSBitmapImageRep(data: tiff)
+        else { return nil }
+        return representation.representation(using: .png, properties: [:])
+    }
+
+    /// A filename for the picture as it leaves ivy: the marker name when it
+    /// already carries an extension, else one matching the bytes.
+    private static func exportName(_ name: String, fileExtension: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return "Image.\(fileExtension)" }
+        return trimmed.contains(".") ? trimmed : "\(trimmed).\(fileExtension)"
     }
 
     /// One checkbox attachment character, ready for insertion at a line start.
