@@ -459,7 +459,8 @@ enum NoteRichTextFormat {
         guard !images.isEmpty else { return nil }
 
         var items: [NSPasteboardItem] = []
-        if !plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        let hasWords = !plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if hasWords {
             let words = NSPasteboardItem()
             words.setString(plain, forType: .string)
             if let rtfd = try? rich.data(
@@ -470,10 +471,67 @@ enum NoteRichTextFormat {
             }
             items.append(words)
         }
+
+        // Most targets read only the first item that carries a flavor, so
+        // raw image data alone pastes one picture however many were copied.
+        // A picture-only copy therefore also lands each picture in a
+        // temporary file and adds its file URL — the multi-file form every
+        // pasteboard reader takes whole. A copy that carries words must not:
+        // ivy's own paste prefers file URLs, and would trade the words for
+        // attachments.
+        let exportDirectory = hasWords ? nil : freshExportDirectory()
+        var usedNames = Set<String>()
         for image in images {
-            items.append(pasteboardItem(for: image))
+            let item = pasteboardItem(for: image)
+            if let exportDirectory {
+                let name = uniqueExportName(image.name, used: &usedNames)
+                let fileURL = exportDirectory.appendingPathComponent(name)
+                if (try? image.data.write(to: fileURL)) != nil {
+                    item.setString(fileURL.absoluteString, forType: .fileURL)
+                }
+            }
+            items.append(item)
         }
         return items
+    }
+
+    /// The previous copy's exported files die with the next copy: once a
+    /// new copy owns the pasteboard, nothing can paste the old one.
+    @MainActor
+    private static var exportedDirectory: URL?
+
+    @MainActor
+    private static func freshExportDirectory() -> URL? {
+        if let exportedDirectory {
+            try? FileManager.default.removeItem(at: exportedDirectory)
+        }
+        exportedDirectory = nil
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ivy-copied-pictures", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        guard (try? FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )) != nil else { return nil }
+        exportedDirectory = directory
+        return directory
+    }
+
+    /// Two copied pictures may share a marker name; their exported files
+    /// cannot share a path.
+    private static func uniqueExportName(_ name: String, used: inout Set<String>) -> String {
+        if used.insert(name).inserted { return name }
+        let ns = name as NSString
+        let base = ns.deletingPathExtension
+        let fileExtension = ns.pathExtension
+        var counter = 2
+        while true {
+            let candidate = fileExtension.isEmpty
+                ? "\(base)-\(counter)"
+                : "\(base)-\(counter).\(fileExtension)"
+            if used.insert(candidate).inserted { return candidate }
+            counter += 1
+        }
     }
 
     @MainActor
@@ -538,9 +596,13 @@ enum NoteRichTextFormat {
     }
 
     /// A filename for the picture as it leaves ivy: the marker name when it
-    /// already carries an extension, else one matching the bytes.
+    /// already carries an extension, else one matching the bytes. Path
+    /// separators cannot survive into a filename.
     private static func exportName(_ name: String, fileExtension: String) -> String {
-        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        let trimmed = name
+            .trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
         guard !trimmed.isEmpty else { return "Image.\(fileExtension)" }
         return trimmed.contains(".") ? trimmed : "\(trimmed).\(fileExtension)"
     }

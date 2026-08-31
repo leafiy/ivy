@@ -510,10 +510,9 @@ struct NoteView: View {
         ) as? [URL], !urls.isEmpty {
             pending = urls.compactMap { PendingNoteAttachment(fileURL: $0) }
             guard !pending.isEmpty else { return false }
-        } else if let item = PendingNoteAttachment(pasteboard: pasteboard) {
-            pending = [item]
         } else {
-            return false
+            pending = PendingNoteAttachment.attachments(pasteboard: pasteboard)
+            guard !pending.isEmpty else { return false }
         }
 
         var queued: [PendingNoteAttachment] = []

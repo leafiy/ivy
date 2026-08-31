@@ -54,6 +54,31 @@ struct PendingNoteAttachment {
         self = attachment
     }
 
+    /// Everything a pasteboard holds. A multi-picture copy is several items,
+    /// each carrying one picture's bytes; reading the pasteboard whole would
+    /// see only the first, so the items are read one by one. Anything short
+    /// of that keeps the single-attachment reading above.
+    static func attachments(pasteboard: NSPasteboard) -> [PendingNoteAttachment] {
+        let perItem = imageAttachmentsPerItem(pasteboard: pasteboard)
+        if perItem.count > 1 { return perItem }
+        return PendingNoteAttachment(pasteboard: pasteboard).map { [$0] } ?? []
+    }
+
+    private static func imageAttachmentsPerItem(pasteboard: NSPasteboard) -> [PendingNoteAttachment] {
+        guard !carriesText(pasteboard), let items = pasteboard.pasteboardItems else { return [] }
+        return items.compactMap { item in
+            for flavor in losslessImageFlavors {
+                guard let data = item.data(forType: flavor.type), !data.isEmpty else { continue }
+                return PendingNoteAttachment(
+                    filename: generatedImageName(fileExtension: flavor.fileExtension),
+                    contentType: flavor.contentType,
+                    data: data
+                )
+            }
+            return nil
+        }
+    }
+
     /// Image flavors whose bytes upload verbatim, best first. TIFF is absent
     /// on purpose: it is the screenshot flavor, and its uncompressed bytes
     /// would eat the account's attachment quota.

@@ -20,11 +20,11 @@ final class NoteCopyTests: XCTestCase {
         )
     }
 
-    private func pngData() -> Data {
+    private func pngData(side: Int = 4) -> Data {
         let representation = NSBitmapImageRep(
             bitmapDataPlanes: nil,
-            pixelsWide: 4,
-            pixelsHigh: 4,
+            pixelsWide: side,
+            pixelsHigh: side,
             bitsPerSample: 8,
             samplesPerPixel: 4,
             hasAlpha: true,
@@ -61,6 +61,70 @@ final class NoteCopyTests: XCTestCase {
         XCTAssertEqual(items[0].data(forType: .png), png)
         XCTAssertNotNil(items[0].data(forType: .tiff))
         XCTAssertNil(items[0].string(forType: .string))
+    }
+
+    /// Raw image flavors alone paste one picture — readers take the first
+    /// item — so a picture-only copy also exports each picture to a file and
+    /// carries its URL, the multi-file form every reader takes whole.
+    func testMultiPictureCopyCarriesEveryPictureAsAFile() throws {
+        let first = pngData(side: 4)
+        let second = pngData(side: 8)
+        let firstURL = "https://example.com/\(UUID().uuidString).png"
+        let secondURL = "https://example.com/\(UUID().uuidString).png"
+        NoteInlineImageStore.shared.registerLocal(data: first, for: firstURL)
+        NoteInlineImageStore.shared.registerLocal(data: second, for: secondURL)
+
+        let items = try XCTUnwrap(NoteRichTextFormat.pasteboardItems(
+            forSelection: editorString(
+                for: "![shot.png](\(firstURL))\n![shot.png](\(secondURL))"
+            )
+        ))
+        XCTAssertEqual(items.count, 2)
+        XCTAssertEqual(items[0].data(forType: .png), first)
+        XCTAssertEqual(items[1].data(forType: .png), second)
+
+        let fileURLs = try items.map { item in
+            try XCTUnwrap(URL(string: XCTUnwrap(item.string(forType: .fileURL))))
+        }
+        XCTAssertEqual(try Data(contentsOf: fileURLs[0]), first)
+        XCTAssertEqual(try Data(contentsOf: fileURLs[1]), second)
+        // Same marker name, two files: the export dedupes the path.
+        XCTAssertEqual(fileURLs[0].lastPathComponent, "shot.png")
+        XCTAssertEqual(fileURLs[1].lastPathComponent, "shot-2.png")
+    }
+
+    /// A copy that carries words must not carry file URLs: ivy's own paste
+    /// prefers them, and would trade the words for attachments.
+    func testMixedCopyCarriesNoFileURLs() throws {
+        let png = pngData()
+        let url = "https://example.com/\(UUID().uuidString).png"
+        NoteInlineImageStore.shared.registerLocal(data: png, for: url)
+
+        let items = try XCTUnwrap(NoteRichTextFormat.pasteboardItems(
+            forSelection: editorString(for: "words\n![shot.png](\(url))")
+        ))
+        XCTAssertEqual(items.count, 2)
+        XCTAssertNil(items[1].string(forType: .fileURL))
+    }
+
+    /// The paste side of the same story: a multi-picture pasteboard is one
+    /// picture per item, and reading it whole would see only the first.
+    func testPasteReadsEveryImageItem() throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name(UUID().uuidString))
+        defer { pasteboard.releaseGlobally() }
+        let first = pngData(side: 4)
+        let second = pngData(side: 8)
+        let items = [first, second].map { data in
+            let item = NSPasteboardItem()
+            item.setData(data, forType: .png)
+            return item
+        }
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.writeObjects(items))
+
+        let pending = PendingNoteAttachment.attachments(pasteboard: pasteboard)
+        XCTAssertEqual(pending.map(\.data), [first, second])
+        XCTAssertEqual(pending.map(\.contentType), ["image/png", "image/png"])
     }
 
     func testMixedSelectionCopiesWordsWithoutTheURLAndThePictureBytes() throws {
